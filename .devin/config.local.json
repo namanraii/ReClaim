@@ -1,7 +1,14 @@
 {
   "permissions": {
     "allow": [
-      "Exec(mkdir)"
+      "Exec(mkdir)",
+      "Exec(python)",
+      "Exec(source)",
+      "Exec(pip install)",
+      "Exec(npm install)",
+      "Exec(npm run)",
+      "Exec(curl)",
+      "Exec(mv)"
     ]
   }
 }

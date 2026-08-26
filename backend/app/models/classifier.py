@@ -11,6 +11,7 @@ import shap
 from sklearn.model_selection import train_test_split
 from sklearn.preprocessing import LabelEncoder
 from sklearn.metrics import classification_report, confusion_matrix, f1_score
+from sklearn.utils.class_weight import compute_sample_weight
 import joblib
 import json
 from typing import Dict, Tuple, Optional, List
@@ -111,6 +112,10 @@ class FailureClassifier:
             ).dt.days
             features['days_since_last_success'] = features['days_since_last_success'].fillna(365)
 
+        # Portability cooldown signal
+        if 'portability_cooldown_until' in features.columns:
+            features['in_portability_cooldown'] = features['portability_cooldown_until'].notna().astype(int)
+
         return features
 
     def encode_features(self, df: pd.DataFrame, fit: bool = True, exclude_cols: list = None) -> pd.DataFrame:
@@ -177,7 +182,8 @@ class FailureClassifier:
                        'scheduled_at', 'executed_at', 'created_at', 'expires_at', 'last_successful_debit',
                        'status', 'response_code', 'response_message', 'detected_at', 'context',
                        'shap_explanation', 'raw_error_code', target_column,
-                       'mandate_category', 'id_mandate', 'id_m']
+                       'mandate_category', 'id_mandate', 'id_m',
+                       'portability_cooldown_until', 'expires_at_m']
         
         feature_cols = [col for col in features_df.columns if col not in exclude_cols]
         self.feature_names = feature_cols
@@ -189,6 +195,9 @@ class FailureClassifier:
         X_train, X_test, y_train, y_test = train_test_split(
             X, y_encoded, test_size=test_size, random_state=self.random_state, stratify=y_encoded
         )
+
+        # Balanced sample weights to handle class imbalance (~19:1 majority:minority)
+        sample_weights = compute_sample_weight(class_weight="balanced", y=y_train)
         
         # Train model
         if self.model_type == "xgboost":
@@ -199,8 +208,7 @@ class FailureClassifier:
                 subsample=0.8,
                 colsample_bytree=0.8,
                 random_state=self.random_state,
-                use_label_encoder=False,
-                eval_metric='mlogloss'
+                eval_metric='mlogloss',
             )
         else:  # lightgbm
             self.model = lgb.LGBMClassifier(
@@ -210,10 +218,14 @@ class FailureClassifier:
                 subsample=0.8,
                 colsample_bytree=0.8,
                 random_state=self.random_state,
-                verbose=-1
+                verbose=-1,
+                class_weight="balanced",
             )
         
-        self.model.fit(X_train, y_train)
+        if self.model_type == "xgboost":
+            self.model.fit(X_train, y_train, sample_weight=sample_weights)
+        else:
+            self.model.fit(X_train, y_train)
         
         # Initialize SHAP explainer
         self.shap_explainer = shap.TreeExplainer(self.model)
@@ -223,13 +235,18 @@ class FailureClassifier:
         
         metrics = {
             'accuracy': (y_pred == y_test).mean(),
-            'f1_macro': f1_score(y_test, y_pred, average='macro'),
-            'f1_weighted': f1_score(y_test, y_pred, average='weighted'),
+            'f1_macro': f1_score(y_test, y_pred, average='macro', zero_division=0),
+            'f1_weighted': f1_score(y_test, y_pred, average='weighted', zero_division=0),
             'classification_report': classification_report(
-                y_test, y_pred, 
+                y_test, y_pred,
                 target_names=self.label_encoder.classes_,
-                output_dict=True
-            )
+                output_dict=True,
+                zero_division=0,
+            ),
+            'confusion_matrix': confusion_matrix(
+                y_test, y_pred, labels=range(len(self.label_encoder.classes_))
+            ).tolist(),
+            'label_names': self.label_encoder.classes_.tolist(),
         }
         
         return metrics

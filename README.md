@@ -2,7 +2,8 @@
 
 Reclaim diagnoses *why* a UPI AutoPay mandate failed — not just that it did — and runs a compliant, auditable recovery workflow that respects NPCI's execution-window and retry-count rules, with a stopping rule that halts outreach once a mandate is unrecoverable. It sits on top of retry engines like Razorpay's own, adding the root-cause layer that turns 'recovered ₹X' into 'and here's why, and here's what to change' — e.g., *your Tuesday-morning SBI batch fails 40% more often; move it to Thursday.*
 
-![Recovery Rate](https://img.shields.io/badge/Recovery%20Rate-59%25-brightgreen)
+![Recovery Rate](https://img.shields.io/badge/Recovery%20Rate-57%25-brightgreen)
+![F1 Macro](https://img.shields.io/badge/F1%20Macro-0.54-blue)
 ![Compliance](https://img.shields.io/badge/NPCI%20Compliance-100%25-blue)
 ![License](https://img.shields.io/badge/License-MIT-yellow)
 
@@ -70,19 +71,23 @@ Measured on 500 synthetic mandates using the trained XGBoost classifier, NPCI co
 
 | Metric | Reclaim (Full System) | Baseline | Improvement |
 |--------|----------------------|----------|-------------|
-| **Recovery Rate** | 58.9% | 30.4% | +28.4% |
-| **Classifier F1 (weighted)** | 0.677 | — | — |
-| **False Nudge Rate** | 9.4% | 0% | Controlled |
+| **Recovery Rate** | 56.8% | 25.0% | +31.8% |
+| **Classifier F1 (macro)** | 0.536 | — | — |
+| **Classifier F1 (weighted)** | 0.611 | — | — |
+| **False Nudge Rate** | 6.4% | 0% | Controlled |
 
 ### Ablation Study
 
 | Configuration | Recovery Rate | Component Contribution |
 |---------------|--------------|----------------------|
-| Full System | 58.9% | — |
-| No Classifier | 48.4% | -10.4% |
-| No Smart Retry | 44.2% | -14.6% |
-| No Nudges | 51.4% | -7.5% |
-| Baseline | 30.4% | -28.4% |
+| Full System | 56.8% | — |
+| No Classifier | 41.8% | -15.0% |
+| No Smart Retry | 41.9% | -14.9% |
+| No Nudges | 49.2% | -7.6% |
+| Baseline | 25.0% | -31.8% |
+
+All 6 failure categories appear in training data (including `NPCI_WINDOW_VIOLATION` at ~26%).
+Per-class F1, confusion matrix, and label distribution are in [docs/evaluation_report.md](docs/evaluation_report.md).
 
 > Run `python notebooks/evaluation.py` to regenerate these numbers from your local environment.
 

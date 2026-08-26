@@ -55,31 +55,45 @@ class SyntheticDataGenerator:
         mandates = []
 
         for i in range(self.num_mandates):
+            amount = self._generate_amount()
+            bank_code = self.rng.choice(self.BANKS)
+            vpa_handles = {
+                "HDFC": "okhdfc", "ICICI": "okicici", "SBI": "oksbi",
+                "AXIS": "okaxis", "KOTAK": "okkotak", "PNB": "okpnb", "BOB": "okbob",
+            }
+            handle = vpa_handles.get(bank_code, self.rng.choice(["okhdfc", "okicici", "oksbi", "ybl", "paytm"]))
+            # ~5% deliberate VPA/bank mismatch (portability signal)
+            if self.rng.random() < 0.05:
+                handle = self.rng.choice([h for h in vpa_handles.values() if h != handle])
+
+            consent = self.rng.random() > 0.1  # 90% consent
             mandate = {
                 "id": str(uuid.uuid4()),
-                "customer_vpa": f"customer{i}@{random.choice(['okhdfc', 'okicici', 'oksbi', 'ybl', 'paytm'])}",
-                "merchant_id": f"merchant_{random.randint(1, 20)}",
-                "bank_code": random.choice(self.BANKS),
-                "psp_app": random.choice(self.PSP_APPS),
-                "amount": self._generate_amount(),
-                "frequency": random.choice(self.FREQUENCIES),
-                "category": random.choice(self.CATEGORIES),
+                "customer_vpa": f"customer{i}@{handle}",
+                "merchant_id": f"merchant_{self.rng.randint(1, 20)}",
+                "bank_code": bank_code,
+                "psp_app": self.rng.choice(self.PSP_APPS),
+                "amount": amount,
+                "frequency": self.rng.choice(self.FREQUENCIES),
+                "category": self.rng.choice(self.CATEGORIES),
                 "created_at": self._generate_created_at(),
                 "status": "ACTIVE",
-                "pin_reauth_required": False,  # Will be calculated
-                "consent_for_outreach": random.random() > 0.1,  # 90% consent
-                "portability_cooldown_until": None
+                "pin_reauth_required": False,
+                "consent_for_outreach": consent,
+                "portability_cooldown_until": None,
             }
 
-            # Set expiry date (1-2 years from creation)
             mandate["expires_at"] = mandate["created_at"] + timedelta(
-                days=random.randint(365, 730)
+                days=self.rng.randint(365, 730)
             )
-
-            # Calculate PIN re-auth requirement
             mandate["pin_reauth_required"] = self._requires_pin_reauth(
                 mandate["amount"], mandate["category"]
             )
+            # ~5% recently ported mandates
+            if self.rng.random() < 0.05:
+                mandate["portability_cooldown_until"] = self.start_date - timedelta(
+                    days=self.rng.randint(1, 60)
+                )
 
             mandates.append(mandate)
 
@@ -159,17 +173,18 @@ class SyntheticDataGenerator:
         return pd.DataFrame(failure_events)
 
     def _generate_amount(self) -> float:
-        """Generate realistic debit amounts"""
-        # Weighted towards common recurring payment amounts
+        """Generate realistic debit amounts with enough high-value for PIN re-auth."""
         common_amounts = [99, 199, 299, 499, 999, 1499, 1999, 4999, 9999]
-        if random.random() < 0.3:
-            return float(random.choice(common_amounts))
-        else:
-            return float(random.randint(100, 50000))
+        high_amounts = [16000, 20000, 25000, 50000, 75000]
+        roll = self.rng.random()
+        if roll < 0.15:
+            return float(self.rng.choice(high_amounts))
+        if roll < 0.45:
+            return float(self.rng.choice(common_amounts))
+        return float(self.rng.randint(100, 50000))
 
     def _generate_created_at(self) -> datetime:
-        """Generate mandate creation date within realistic range"""
-        days_ago = random.randint(30, 365)
+        days_ago = self.rng.randint(30, 365)
         return self.start_date - timedelta(days=days_ago)
 
     def _generate_num_attempts(self, mandate: Dict) -> int:
@@ -199,12 +214,22 @@ class SyntheticDataGenerator:
         # Add to creation date
         base_time = created_at + timedelta(days=days_to_add)
 
-        # Add realistic scheduling (early morning batch processing)
-        # Most banks process batches between 2 AM - 8 AM
-        hour = random.randint(2, 8)
-        minute = random.randint(0, 59)
+        # Mix scheduling windows so all failure modes are reachable in training data:
+        # ~60% early-morning batch (2-8 AM, highest success)
+        # ~25% peak hours (10-13, 17-21) → NPCI_WINDOW_VIOLATION labels
+        # ~15% other off-peak slots (8-10, 13-17, after 21:30)
+        roll = self.rng.random()
+        if roll < 0.60:
+            hour = self.rng.randint(2, 8)
+        elif roll < 0.85:
+            blocks = [(10, 13), (17, 21)]
+            block = blocks[self.rng.randint(0, len(blocks))]
+            hour = self.rng.randint(block[0], block[1])
+        else:
+            hour = int(self.rng.choice([8, 9, 14, 15, 16, 22]))
+        minute = self.rng.randint(0, 59)
 
-        return base_time.replace(hour=hour, minute=minute)
+        return base_time.replace(hour=hour, minute=minute, second=0, microsecond=0)
 
     def _calculate_success_probability(self, mandate: Dict, scheduled_time: datetime, attempt_num: int) -> float:
         """Calculate success probability based on multiple factors"""
@@ -243,31 +268,34 @@ class SyntheticDataGenerator:
         return max(0.1, min(0.95, base_prob))
 
     def _classify_failure(self, mandate: Dict, scheduled_time: datetime, attempt_num: int) -> str:
-        """Classify failure reason based on context"""
+        """Classify failure reason based on context — all 6 categories must be reachable."""
         hour = scheduled_time.hour
         day_of_month = scheduled_time.day
 
-        # Peak hour violation
+        # Peak hour violation (requires peak-hour scheduling — see _generate_scheduled_time)
         if 10 <= hour <= 13 or 17 <= hour <= 21:
             return "NPCI_WINDOW_VIOLATION"
 
-        # Month-end low balance
-        if day_of_month > 25 and random.random() < 0.4:
+        # Month-end low balance (salary-cycle effect)
+        if day_of_month > 25 and self.rng.random() < 0.50:
             return "LOW_BALANCE"
 
-        # PIN re-auth required
-        if mandate["pin_reauth_required"] and random.random() < 0.3:
+        # PIN re-auth required — elevated for high-value mandates
+        if mandate["pin_reauth_required"] and self.rng.random() < 0.50:
             return "PIN_REAUTH_REQUIRED"
 
-        # Portability breakage (random, as it's unpredictable)
-        if random.random() < 0.05:
+        # Portability breakage — only when mandate was recently ported
+        if mandate.get("portability_cooldown_until") is not None and self.rng.random() < 0.30:
+            return "PORTABILITY_BREAKAGE"
+        if self.rng.random() < 0.04:
             return "PORTABILITY_BREAKAGE"
 
-        # Pre-debit opt-out
-        if random.random() < 0.08:
+        # Pre-debit opt-out — elevated when customer opted out of outreach
+        if not mandate.get("consent_for_outreach", True) and self.rng.random() < 0.45:
+            return "PRE_DEBIT_OPT_OUT"
+        if self.rng.random() < 0.07:
             return "PRE_DEBIT_OPT_OUT"
 
-        # Default to bank technical decline
         return "BANK_TECHNICAL_DECLINE"
 
     def _generate_error_code(self) -> str:

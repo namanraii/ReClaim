@@ -16,7 +16,9 @@ This document describes the methodology used to generate synthetic UPI AutoPay m
 - **Optimal Processing Window:** Early morning batch processing (2:00 AM – 8:00 AM) modeled as highest success probability
 
 **Implementation in Synthetic Data:**
-- Scheduled times are weighted toward early morning hours (2-8 AM)
+- ~60% of scheduled times fall in early morning (2–8 AM) — highest success probability
+- ~25% fall in NPCI peak hours (10 AM–1 PM, 5 PM–9 PM) — generates `NPCI_WINDOW_VIOLATION` labels
+- ~15% fall in other off-peak slots (8–10 AM, 1–5 PM, after 9:30 PM)
 - Peak hour attempts have 30% lower success probability
 - Weekend scheduling is avoided in the generator
 
