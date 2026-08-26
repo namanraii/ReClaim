@@ -184,6 +184,14 @@ Based on the implemented rules, synthetic failure distribution:
 - Portability cooldown (exactly 90 days from OC-223)
 - Pre-debit notification requirements (24-hour window from RBI 2026)
 
+### Classifier Evaluation Caveats
+
+**NPCI_WINDOW_VIOLATION F1 = 1.00 (not data leakage):**  
+`NPCI_WINDOW_VIOLATION` is deterministically defined by the execution-hour rule in the synthetic generator — any peak-hour attempt (10–13h, 17–21h) is labeled this way by construction, and no other category is ever scheduled in those hours. Perfect separability on this category reflects the label rule, not classifier skill. The meaningful test of model performance is the other five categories, where labels are not purely time-derived. This is acknowledged explicitly to preempt confusion with data leakage.
+
+**PRE_DEBIT_OPT_OUT separability:**  
+`PRE_DEBIT_OPT_OUT` remains the hardest category to separate from `BANK_TECHNICAL_DECLINE` given the available features. The primary separating signal (`consent_for_outreach`) is present as a feature, but in a real system the decisive signal would be an explicit `notification_delivery_failed` flag from the PSP or bank. Without that, some irreducible confusion between these two categories is expected. This is a known limitation of the synthetic data approach.
+
 ## Validation Against Real-world Statistics
 
 ### Razorpay Published Funnel Numbers (Source: Razorpay)

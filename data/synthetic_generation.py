@@ -6,7 +6,6 @@ Grounded in NPCI/RBI rules documented in METHODOLOGY.md
 import pandas as pd
 import numpy as np
 from datetime import datetime, timedelta
-import random
 import uuid
 from typing import List, Dict, Tuple
 
@@ -124,7 +123,7 @@ class SyntheticDataGenerator:
                     "id": str(uuid.uuid4()),
                     "mandate_id": mandate["id"],
                     "scheduled_at": scheduled_time,
-                    "executed_at": scheduled_time + timedelta(minutes=random.randint(1, 30)),
+                    "executed_at": scheduled_time + timedelta(minutes=int(self.rng.randint(1, 30))),
                     "amount": mandate["amount"],
                     "attempt_number": attempt_num,
                     "idempotency_key": str(uuid.uuid4()),
@@ -293,7 +292,7 @@ class SyntheticDataGenerator:
         # Pre-debit opt-out — elevated when customer opted out of outreach
         if not mandate.get("consent_for_outreach", True) and self.rng.random() < 0.45:
             return "PRE_DEBIT_OPT_OUT"
-        if self.rng.random() < 0.07:
+        if self.rng.random() < 0.02:  # reduced from 0.07 — less contamination of consent=True rows
             return "PRE_DEBIT_OPT_OUT"
 
         return "BANK_TECHNICAL_DECLINE"
@@ -306,7 +305,7 @@ class SyntheticDataGenerator:
             "U91", "U92",        # Technical errors
             "U33", "U34"         # Balance-related errors
         ]
-        return random.choice(error_codes)
+        return self.rng.choice(error_codes)
 
     def _generate_confidence(self, category: str) -> float:
         """Generate confidence score for classification"""
@@ -319,7 +318,7 @@ class SyntheticDataGenerator:
             "PORTABILITY_BREAKAGE": 0.82,
             "PRE_DEBIT_OPT_OUT": 0.88
         }
-        return base_confidence.get(category, 0.80) + random.uniform(-0.05, 0.05)
+        return base_confidence.get(category, 0.80) + self.rng.uniform(-0.05, 0.05)
 
     def _generate_shap_explanation(self, category: str) -> str:
         """Generate mock SHAP explanation (in real system, this comes from model)"""

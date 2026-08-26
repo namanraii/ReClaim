@@ -116,6 +116,10 @@ class FailureClassifier:
         if 'portability_cooldown_until' in features.columns:
             features['in_portability_cooldown'] = features['portability_cooldown_until'].notna().astype(int)
 
+        # Consent for outreach — key signal for PRE_DEBIT_OPT_OUT separability
+        if 'consent_for_outreach' in features.columns:
+            features['consent_for_outreach'] = features['consent_for_outreach'].astype(int)
+
         return features
 
     def encode_features(self, df: pd.DataFrame, fit: bool = True, exclude_cols: list = None) -> pd.DataFrame:
@@ -209,6 +213,7 @@ class FailureClassifier:
                 colsample_bytree=0.8,
                 random_state=self.random_state,
                 eval_metric='mlogloss',
+                nthread=1,  # single-threaded for full reproducibility
             )
         else:  # lightgbm
             self.model = lgb.LGBMClassifier(
@@ -314,10 +319,10 @@ class FailureClassifier:
         
         # Create explanation dictionary
         explanation = {
-            'feature_names': feature_cols,
+            'feature_names': self.feature_names,
             'shap_values': shap_values[0].tolist(),
             'base_value': float(self.shap_explainer.expected_value[0] if isinstance(self.shap_explainer.expected_value, list) else self.shap_explainer.expected_value),
-            'feature_importance': dict(zip(feature_cols, np.abs(shap_values[0]).tolist()))
+            'feature_importance': dict(zip(self.feature_names, np.abs(shap_values[0]).tolist()))
         }
         
         return explanation
