@@ -1,7 +1,7 @@
 import React, { useState, useEffect } from 'react';
 import { useParams } from 'react-router-dom';
 import { dashboardAPI, recoveryAPI, complianceAPI } from '../utils/api';
-import './styles/MandateDetails.css';
+import './MandateDetails.css';
 
 function MandateDetails() {
   const { id } = useParams();

@@ -38,8 +38,8 @@ class TestExecutionWindow:
 
     def test_weekend_blocked(self):
         """Weekends should be blocked"""
-        saturday = datetime(2026, 8, 23, 14, 0)  # Saturday 2:00 PM
-        sunday = datetime(2026, 8, 24, 14, 0)    # Sunday 2:00 PM
+        saturday = datetime(2026, 8, 22, 14, 0)  # Saturday 2:00 PM
+        sunday = datetime(2026, 8, 23, 14, 0)    # Sunday 2:00 PM
         assert not NPCIComplianceEngine.is_within_execution_window(saturday)
         assert not NPCIComplianceEngine.is_within_execution_window(sunday)
 
@@ -68,8 +68,12 @@ class TestPINReauth:
 
     def test_above_default_threshold(self):
         """Amounts above ₹15,000 should require PIN re-auth"""
-        assert NPCIComplianceEngine.requires_pin_reauth(15000)
+        assert NPCIComplianceEngine.requires_pin_reauth(15001)
         assert NPCIComplianceEngine.requires_pin_reauth(20000)
+
+    def test_at_default_threshold_boundary(self):
+        """Exactly ₹15,000 should not require PIN re-auth (up to ₹15,000 exempt)"""
+        assert not NPCIComplianceEngine.requires_pin_reauth(15000)
 
     def test_exception_category_insurance(self):
         """Insurance premiums up to ₹1,00,000 should not require PIN re-auth"""

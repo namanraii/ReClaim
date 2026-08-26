@@ -6,8 +6,8 @@ from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 from app.db import engine, Base
 from app.api import (
-    mandates_router, recovery_router, classification_router, 
-    compliance_router, dashboard_router
+    mandates_router, recovery_router, classification_router,
+    compliance_router, dashboard_router,
 )
 
 # Create FastAPI app
@@ -36,9 +36,10 @@ app.include_router(dashboard_router)
 
 @app.on_event("startup")
 async def startup_event():
-    """Initialize database on startup"""
-    # Create tables
+    """Initialize database and seed if empty."""
     Base.metadata.create_all(bind=engine)
+    from app.db.seed import seed_database
+    seed_database(force=False)
     print("Database initialized successfully")
 
 

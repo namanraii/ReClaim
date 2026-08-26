@@ -2,7 +2,7 @@
 SQLAlchemy models for Reclaim database schema
 """
 
-from sqlalchemy import Column, String, DateTime, Float, Integer, Text, Boolean, ForeignKey, Enum as SQLEnum
+from sqlalchemy import Column, String, DateTime, Float, Integer, Text, Boolean, ForeignKey, Enum as SQLEnum, JSON
 from sqlalchemy.orm import relationship
 from datetime import datetime
 import enum
@@ -60,6 +60,7 @@ class Mandate(Base):
     psp_app = Column(String, nullable=False)  # GPay, PhonePe, Paytm, etc.
     amount = Column(Float, nullable=False)
     frequency = Column(String, nullable=False)  # daily, weekly, monthly, etc.
+    category = Column(String, nullable=False, default="subscription")
     status = Column(SQLEnum(MandateStatus), default=MandateStatus.ACTIVE)
     created_at = Column(DateTime, default=datetime.utcnow)
     expires_at = Column(DateTime, nullable=True)

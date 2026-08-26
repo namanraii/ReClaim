@@ -10,7 +10,7 @@ import uuid
 
 from app.compliance import NPCIComplianceEngine, ComplianceViolationType
 from app.db.models import (
-    Mandate, DebitAttempt, FailureEvent, RecoveryOutcome, 
+    Mandate, DebitAttempt, DebitStatus, FailureEvent, RecoveryOutcome, 
     RecoveryState, FailureCategory
 )
 
@@ -154,27 +154,65 @@ class RecoveryAgent:
             "attempt_number": recovery_outcome.recovery_attempts + 1
         }
 
+    def _make_idempotency_key(self, mandate_id: str, attempt_number: int) -> str:
+        return f"{mandate_id}-attempt-{attempt_number}"
+
+    def _idempotency_key_exists(self, key: str) -> bool:
+        existing = self.db.query(DebitAttempt).filter(
+            DebitAttempt.idempotency_key == key
+        ).first()
+        return existing is not None
+
     def _transition_to_retrying(self, recovery_outcome: RecoveryOutcome, mandate: Mandate) -> Dict:
-        """Transition from RETRY_SCHEDULED to RETRYING state"""
+        """Transition from RETRY_SCHEDULED to RETRYING state."""
+        attempt_number = recovery_outcome.recovery_attempts + 1
+        idempotency_key = self._make_idempotency_key(mandate.id, attempt_number)
+
+        if self._idempotency_key_exists(idempotency_key):
+            existing = self.db.query(DebitAttempt).filter(
+                DebitAttempt.idempotency_key == idempotency_key
+            ).first()
+            if existing and existing.status == DebitStatus.SUCCESS:
+                return self._transition_to_recovered(recovery_outcome, mandate)
+            return {
+                "action": "duplicate_retry_blocked",
+                "next_state": recovery_outcome.state,
+                "reason": f"Idempotency key {idempotency_key} already used",
+            }
+
+        retry_attempt = DebitAttempt(
+            id=str(uuid.uuid4()),
+            mandate_id=mandate.id,
+            scheduled_at=datetime.utcnow(),
+            amount=mandate.amount,
+            status=DebitStatus.RETRYING,
+            attempt_number=attempt_number,
+            idempotency_key=idempotency_key,
+        )
+        self.db.add(retry_attempt)
+
         recovery_outcome.state = RecoveryState.RETRYING
         recovery_outcome.recovery_attempts += 1
         recovery_outcome.updated_at = datetime.utcnow()
-        
-        # Log audit entry
+
         self._log_audit_event(
             mandate_id=mandate.id,
             event_type="RETRYING",
-            event_data={"attempt_number": recovery_outcome.recovery_attempts},
+            event_data={
+                "attempt_number": recovery_outcome.recovery_attempts,
+                "idempotency_key": idempotency_key,
+            },
             reason=f"Executing retry attempt {recovery_outcome.recovery_attempts}",
-            actor="RecoveryAgent"
+            actor="RecoveryAgent",
         )
-        
+
         self.db.commit()
-        
+
         return {
             "action": "retrying",
             "next_state": RecoveryState.RETRYING,
-            "attempt_number": recovery_outcome.recovery_attempts
+            "attempt_number": recovery_outcome.recovery_attempts,
+            "idempotency_key": idempotency_key,
         }
 
     def _evaluate_retry_result(self, recovery_outcome: RecoveryOutcome, mandate: Mandate) -> Dict:
@@ -273,14 +311,14 @@ class RecoveryAgent:
         
         return (window_start, window_end, is_compliant, violations)
 
-    def _simulate_retry_success(self, mandate: Mandate) -> bool:
-        """
-        Simulate retry success (in real system, this would check actual debit result)
-        This is a placeholder for demonstration
-        """
-        import random
-        # Simulate 60% success rate for retries
-        return random.random() < 0.6
+    def _simulate_retry_success(self, mandate: Mandate, failure_category: FailureCategory = None) -> bool:
+        """Deterministic category-aware retry success simulation."""
+        import hashlib
+        from app.evaluation.simulator import CATEGORY_RECOVERY_RATES, deterministic_random
+
+        category = failure_category.value if failure_category else "BANK_TECHNICAL_DECLINE"
+        rate = CATEGORY_RECOVERY_RATES.get(category, 0.55)
+        return deterministic_random(mandate.id, "retry") < rate
 
     def _log_audit_event(self, mandate_id: str, event_type: str, event_data: Dict,
                         reason: str, actor: str, compliant: bool = True, 

@@ -1,6 +1,6 @@
 import axios from 'axios';
 
-const API_BASE_URL = 'http://localhost:8000';
+const API_BASE_URL = import.meta.env.VITE_API_URL || 'http://localhost:8000';
 
 const api = axios.create({
   baseURL: API_BASE_URL,
@@ -25,6 +25,12 @@ export const mandatesAPI = {
   get: (mandateId) => api.get(`/mandates/${mandateId}`),
   create: (data) => api.post('/mandates', data),
   updateStatus: (mandateId, status) => api.put(`/mandates/${mandateId}/status`, { status }),
+};
+
+export const classificationAPI = {
+  predict: (data) => api.post('/classification/predict', data),
+  explain: (mandateId) => api.get(`/classification/explain/${mandateId}`),
+  train: (data) => api.post('/classification/train', data),
 };
 
 export const recoveryAPI = {

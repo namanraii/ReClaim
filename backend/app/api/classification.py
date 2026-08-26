@@ -2,14 +2,14 @@
 Classification API Routes
 """
 
-from fastapi import APIRouter, Depends, HTTPException, UploadFile
+from fastapi import APIRouter, Depends, HTTPException
 from sqlalchemy.orm import Session
 from typing import Dict, List
 import pandas as pd
-import io
 
 from app.db import get_db
-from app.models import FailureClassifier, ProbabilityCalibrator
+from app.models import get_classifier, is_model_available, FailureClassifier
+from app.models.service import MODEL_PATH
 from pydantic import BaseModel
 
 
@@ -28,28 +28,51 @@ class ClassificationRequest(BaseModel):
 
 
 class TrainRequest(BaseModel):
-    data_file: str  # Path to training data CSV
+    data_file: str = ""
     model_type: str = "xgboost"
+
+
+def _request_to_dataframe(request: ClassificationRequest) -> pd.DataFrame:
+    return pd.DataFrame([{
+        "mandate_id": request.mandate_id,
+        "bank_code": request.bank_code,
+        "psp_app": request.psp_app,
+        "amount": request.amount,
+        "scheduled_at": request.scheduled_at,
+        "attempt_number": request.attempt_number,
+        "category": request.category,
+        "pin_reauth_required": request.pin_reauth_required,
+        "created_at": request.scheduled_at,
+    }])
+
+
+def _format_shap(explanation: Dict) -> Dict[str, float]:
+    importance = explanation.get("feature_importance", {})
+    total = sum(importance.values()) or 1.0
+    return {k: round(v / total, 3) for k, v in importance.items()}
 
 
 @router.post("/predict")
 def predict_failure(request: ClassificationRequest, db: Session = Depends(get_db)):
-    """Predict failure category for a mandate attempt"""
+    """Predict failure category for a mandate attempt using the trained model."""
+    if not is_model_available():
+        raise HTTPException(
+            status_code=503,
+            detail="Classifier not trained. Run: python -m scripts.train_classifier",
+        )
     try:
-        # Load trained model (in production, this would be cached)
-        classifier = FailureClassifier(model_type="xgboost")
-        
-        # For demo, we'll return a mock prediction
-        # In production, load the trained model and make real predictions
+        classifier = get_classifier()
+        df = _request_to_dataframe(request)
+        predictions, confidence_scores = classifier.predict(df)
+        predicted = predictions[0]
+        confidence = float(confidence_scores[0].max())
+        explanation = classifier.explain_prediction(df, index=0)
+
         return {
             "mandate_id": request.mandate_id,
-            "predicted_category": "LOW_BALANCE",
-            "confidence": 0.85,
-            "shap_explanation": {
-                "day_of_month": 0.4,
-                "amount": 0.3,
-                "bank_code": 0.2
-            }
+            "predicted_category": predicted,
+            "confidence": round(confidence, 3),
+            "shap_explanation": _format_shap(explanation),
         }
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
@@ -57,60 +80,72 @@ def predict_failure(request: ClassificationRequest, db: Session = Depends(get_db
 
 @router.post("/train")
 def train_classifier(request: TrainRequest, db: Session = Depends(get_db)):
-    """Train the failure classifier"""
+    """Train the failure classifier on synthetic data."""
     try:
-        # Load training data
-        # In production, this would load from the specified file
-        classifier = FailureClassifier(model_type=request.model_type)
-        
-        # Mock training for demo
+        import subprocess
+        import sys
+        result = subprocess.run(
+            [sys.executable, "-m", "scripts.train_classifier"],
+            capture_output=True,
+            text=True,
+            cwd=str(MODEL_PATH.parent.parent),
+        )
+        if result.returncode != 0:
+            raise HTTPException(status_code=500, detail=result.stderr)
         return {
-            "message": "Classifier training initiated",
+            "message": "Classifier trained successfully",
             "model_type": request.model_type,
-            "status": "training"
+            "status": "completed",
+            "model_path": str(MODEL_PATH),
         }
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=str(e))
-
-
-@router.post("/calibrate")
-def calibrate_probabilities(db: Session = Depends(get_db)):
-    """Calibrate classifier probabilities"""
-    try:
-        calibrator = ProbabilityCalibrator(method="isotonic")
-        
-        # Mock calibration for demo
-        return {
-            "message": "Probability calibration initiated",
-            "method": "isotonic",
-            "status": "calibrating"
-        }
+    except HTTPException:
+        raise
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
 
 
 @router.get("/explain/{mandate_id}")
 def explain_prediction(mandate_id: str, db: Session = Depends(get_db)):
-    """Get SHAP explanation for a prediction"""
-    try:
-        # Mock explanation for demo
-        return {
-            "mandate_id": mandate_id,
-            "predicted_category": "LOW_BALANCE",
-            "confidence": 0.85,
-            "shap_values": {
-                "day_of_month": 0.4,
-                "amount": 0.3,
-                "bank_code": 0.2,
-                "hour_of_day": 0.1
-            },
-            "base_value": 0.2,
-            "feature_importance": {
-                "day_of_month": 0.4,
-                "amount": 0.3,
-                "bank_code": 0.2,
-                "hour_of_day": 0.1
-            }
-        }
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=str(e))
+    """Get SHAP explanation for the latest failure on a mandate."""
+    from app.db.models import DebitAttempt, FailureEvent, Mandate
+
+    if not is_model_available():
+        raise HTTPException(status_code=503, detail="Classifier not trained.")
+
+    mandate = db.query(Mandate).filter(Mandate.id == mandate_id).first()
+    if not mandate:
+        raise HTTPException(status_code=404, detail="Mandate not found")
+
+    latest_attempt = (
+        db.query(DebitAttempt)
+        .filter(DebitAttempt.mandate_id == mandate_id, DebitAttempt.status == "FAILED")
+        .order_by(DebitAttempt.scheduled_at.desc())
+        .first()
+    )
+    if not latest_attempt:
+        raise HTTPException(status_code=404, detail="No failed attempts found")
+
+    df = pd.DataFrame([{
+        "mandate_id": mandate_id,
+        "bank_code": mandate.bank_code,
+        "psp_app": mandate.psp_app,
+        "amount": latest_attempt.amount,
+        "scheduled_at": latest_attempt.scheduled_at.isoformat(),
+        "attempt_number": latest_attempt.attempt_number,
+        "category": mandate.category or "subscription",
+        "pin_reauth_required": mandate.pin_reauth_required,
+        "created_at": mandate.created_at.isoformat() if mandate.created_at else latest_attempt.scheduled_at.isoformat(),
+    }])
+
+    classifier = get_classifier()
+    predictions, confidence_scores = classifier.predict(df)
+    explanation = classifier.explain_prediction(df, index=0)
+
+    return {
+        "mandate_id": mandate_id,
+        "predicted_category": predictions[0],
+        "confidence": round(float(confidence_scores[0].max()), 3),
+        "shap_values": explanation.get("feature_importance", {}),
+        "base_value": explanation.get("base_value", 0.0),
+        "feature_importance": explanation.get("feature_importance", {}),
+    }

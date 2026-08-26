@@ -2,7 +2,7 @@
 
 Reclaim diagnoses *why* a UPI AutoPay mandate failed — not just that it did — and runs a compliant, auditable recovery workflow that respects NPCI's execution-window and retry-count rules, with a stopping rule that halts outreach once a mandate is unrecoverable. It sits on top of retry engines like Razorpay's own, adding the root-cause layer that turns 'recovered ₹X' into 'and here's why, and here's what to change' — e.g., *your Tuesday-morning SBI batch fails 40% more often; move it to Thursday.*
 
-![Recover Rate](https://img.shields.io/badge/Recovery%20Rate-75%25-brightgreen)
+![Recovery Rate](https://img.shields.io/badge/Recovery%20Rate-59%25-brightgreen)
 ![Compliance](https://img.shields.io/badge/NPCI%20Compliance-100%25-blue)
 ![License](https://img.shields.io/badge/License-MIT-yellow)
 
@@ -64,23 +64,27 @@ Reclaim is an **agentic recovery system** that:
 
 ## 📊 Evaluation Results
 
+Measured on 500 synthetic mandates using the trained XGBoost classifier, NPCI compliance engine, and recovery simulator. See [docs/evaluation_report.md](docs/evaluation_report.md) for full details.
+
 ### Performance on Synthetic Data (500 Mandates)
 
-| Metric | Reclaim | Baseline | Improvement |
-|--------|---------|----------|-------------|
-| **Recovery Rate** | 75% | 55% | +20% |
-| **Revenue Recovered** | ₹1,25,000 | ₹75,000 | +₹50,000 |
-| **False Nudge Rate** | 12% | 0% | Controlled |
+| Metric | Reclaim (Full System) | Baseline | Improvement |
+|--------|----------------------|----------|-------------|
+| **Recovery Rate** | 58.9% | 30.4% | +28.4% |
+| **Classifier F1 (weighted)** | 0.677 | — | — |
+| **False Nudge Rate** | 9.4% | 0% | Controlled |
 
 ### Ablation Study
 
 | Configuration | Recovery Rate | Component Contribution |
 |---------------|--------------|----------------------|
-| Full System | 75% | — |
-| No Classifier | 65% | -10% |
-| No Smart Retry | 60% | -15% |
-| No Nudges | 67% | -8% |
-| Baseline | 55% | -20% |
+| Full System | 58.9% | — |
+| No Classifier | 48.4% | -10.4% |
+| No Smart Retry | 44.2% | -14.6% |
+| No Nudges | 51.4% | -7.5% |
+| Baseline | 30.4% | -28.4% |
+
+> Run `python notebooks/evaluation.py` to regenerate these numbers from your local environment.
 
 ### Compliance Verification
 
@@ -112,13 +116,15 @@ docker-compose up -d
 
 # Access the dashboard
 open http://localhost:3000
+
+# API documentation
+open http://localhost:8000/docs
 ```
 
-The demo includes:
-- ✅ Seeded synthetic data (500 mandates)
-- ✅ Pre-trained classifier
-- ✅ Interactive dashboard
-- ✅ API documentation at http://localhost:8000/docs
+The demo automatically:
+- Trains the XGBoost classifier (if not already present)
+- Seeds 500 synthetic mandates into Postgres
+- Starts the FastAPI backend and React dashboard
 
 ### Local Development
 
@@ -128,10 +134,11 @@ cd backend
 python -m venv venv
 source venv/bin/activate  # On Windows: venv\Scripts\activate
 pip install -r requirements.txt
-python -m app.db.init_db  # Initialize database
+python -m scripts.train_classifier   # Train classifier
+python -m app.db.seed --force      # Seed database
 uvicorn app.main:app --reload
 
-# Frontend
+# Frontend (separate terminal)
 cd frontend
 npm install
 npm run dev
