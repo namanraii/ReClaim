@@ -1,15 +1,17 @@
 """
 Compliance API Routes
+Authoritative Policy Enforcement and Regulatory Rule Registry Endpoints
 """
 
 from fastapi import APIRouter, Depends, HTTPException
 from sqlalchemy.orm import Session
-from typing import Dict, List
+from typing import Dict, List, Optional
 from datetime import datetime
+from pydantic import BaseModel
 
 from app.db import get_db
-from app.compliance import NPCIComplianceEngine, ComplianceViolationType
-from pydantic import BaseModel
+from app.compliance import NPCIComplianceEngine, ComplianceViolationType, ComplianceApprovalToken
+from app.compliance.registry import REGULATORY_RULE_REGISTRY, list_all_rules
 
 
 router = APIRouter(prefix="/compliance", tags=["compliance"])
@@ -19,12 +21,54 @@ class ComplianceCheckRequest(BaseModel):
     scheduled_time: str
     attempt_number: int
     mandate_amount: float
-    mandate_category: str = None
-    last_port_date: str = None
+    mandate_category: Optional[str] = None
+    last_port_date: Optional[str] = None
+
+
+class ComplianceTokenRequest(BaseModel):
+    action_name: str
+    mandate_id: str
+    attempt_number: int
+    mandate_amount: float
+    scheduled_time: str
+    mandate_category: Optional[str] = None
+    last_port_date: Optional[str] = None
+    consent_for_outreach: bool = True
 
 
 class ExecutionWindowRequest(BaseModel):
     from_time: str
+
+
+@router.get("/registry")
+def get_regulatory_rule_registry():
+    """Returns the complete authoritative Regulatory Rule Registry with circular citations"""
+    return {"rules": [r.dict() for r in list_all_rules()]}
+
+
+@router.post("/token", response_model=ComplianceApprovalToken)
+def issue_compliance_token(request: ComplianceTokenRequest):
+    """
+    Issues a cryptographically verifiable / structured ComplianceApprovalToken.
+    Requires action parameters and validates across all NPCI & RBI rules.
+    """
+    try:
+        scheduled_time = datetime.fromisoformat(request.scheduled_time)
+        last_port_date = datetime.fromisoformat(request.last_port_date) if request.last_port_date else None
+
+        token = NPCIComplianceEngine.issue_compliance_token(
+            action_name=request.action_name,
+            mandate_id=request.mandate_id,
+            attempt_number=request.attempt_number,
+            mandate_amount=request.mandate_amount,
+            scheduled_time=scheduled_time,
+            mandate_category=request.mandate_category,
+            last_port_date=last_port_date,
+            consent_for_outreach=request.consent_for_outreach
+        )
+        return token
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
 
 
 @router.post("/validate")
@@ -70,7 +114,7 @@ def get_execution_window(request: ExecutionWindowRequest, db: Session = Depends(
 
 @router.get("/rules")
 def get_compliance_rules(db: Session = Depends(get_db)):
-    """Get NPCI compliance rules"""
+    """Get legacy rule summary"""
     return {
         "peak_hours": [
             {"start": "10:00", "end": "13:00"},
@@ -96,22 +140,3 @@ def check_pin_reauth(amount: float, category: str = None, db: Session = Depends(
         "requires_pin_reauth": requires_reauth,
         "threshold_used": NPCIComplianceEngine.PIN_REAUTH_EXCEPTION_THRESHOLD if category in NPCIComplianceEngine.PIN_REAUTH_EXCEPTION_CATEGORIES else NPCIComplianceEngine.PIN_REAUTH_DEFAULT_THRESHOLD
     }
-
-
-@router.post("/portability-cooldown")
-def check_portability_cooldown(last_port_date: str, current_date: str = None, db: Session = Depends(get_db)):
-    """Check if mandate is within portability cooldown"""
-    try:
-        last_port = datetime.fromisoformat(last_port_date)
-        current = datetime.fromisoformat(current_date) if current_date else datetime.utcnow()
-
-        in_cooldown = NPCIComplianceEngine.is_within_portability_cooldown(last_port, current)
-
-        return {
-            "last_port_date": last_port_date,
-            "current_date": current.isoformat(),
-            "in_cooldown": in_cooldown,
-            "cooldown_days": NPCIComplianceEngine.PORTABILITY_COOLDOWN_DAYS
-        }
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=str(e))

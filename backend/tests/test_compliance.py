@@ -36,12 +36,12 @@ class TestExecutionWindow:
         allowed_time = datetime(2026, 8, 24, 22, 0)  # 10:00 PM
         assert NPCIComplianceEngine.is_within_execution_window(allowed_time)
 
-    def test_weekend_blocked(self):
-        """Weekends should be blocked"""
-        saturday = datetime(2026, 8, 22, 14, 0)  # Saturday 2:00 PM
-        sunday = datetime(2026, 8, 23, 14, 0)    # Sunday 2:00 PM
-        assert not NPCIComplianceEngine.is_within_execution_window(saturday)
-        assert not NPCIComplianceEngine.is_within_execution_window(sunday)
+    def test_bank_calendar_maintenance(self):
+        """Bank core banking maintenance window on Sunday midnight should be flagged"""
+        sunday_maintenance = datetime(2026, 8, 23, 2, 0)  # Sunday 2:00 AM
+        sunday_regular = datetime(2026, 8, 23, 14, 0)      # Sunday 2:00 PM (Off-peak)
+        assert not NPCIComplianceEngine.is_bank_processing_window(sunday_maintenance)
+        assert NPCIComplianceEngine.is_bank_processing_window(sunday_regular)
 
 
 class TestRetryLimits:
@@ -199,9 +199,9 @@ class TestNextValidWindow:
         assert window_start.hour >= 13
         assert NPCIComplianceEngine.is_within_execution_window(window_start)
 
-    def test_next_window_from_weekend(self):
-        """Should skip to Monday from weekend"""
-        from_time = datetime(2026, 8, 23, 14, 0)  # Saturday 2:00 PM
+    def test_next_window_from_peak_evening(self):
+        """Should skip evening peak to late night or next morning off-peak"""
+        from_time = datetime(2026, 8, 25, 18, 0)  # 6:00 PM (Peak)
         window_start, window_end = NPCIComplianceEngine.get_next_valid_execution_window(from_time)
-        # Should be Monday
-        assert window_start.weekday() == 0  # Monday
+        assert window_start.hour >= 21 or window_start.hour < 10
+        assert NPCIComplianceEngine.is_within_execution_window(window_start)

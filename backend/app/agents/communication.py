@@ -1,215 +1,118 @@
 """
-Hinglish Communication Templates with LLM Tone Polish
-Handles customer outreach with compliant, contextual messaging
+Generative AI Communication Agent
+Generates context-aware, bilingual Hinglish customer recovery communications.
+Strictly DPDPA consent-gated and checked by the Deterministic Policy Gate before dispatch.
 """
 
-from typing import Dict, Optional
+from typing import Dict, Optional, Any
+import os
 import json
 
 
 class CommunicationAgent:
     """
-    Generates Hinglish communication templates for customer outreach.
-    Uses slot-filled templates with LLM tone polish for natural language.
+    Generative AI Agent for Customer Recovery Outreach.
+    Produces contextual Hinglish messaging based on diagnosed failure modes.
     """
 
-    # Base templates with slots for code-injected values
+    # Base structured templates
     TEMPLATES = {
-        "low_balance": {
-            "hi": "Namaste! Aapke mandate debit ke liye balance kam hai. ₹{amount} ka payment {date} ko fail ho gaya. Please aap account mein balance add kar dein taaki next attempt successful ho.",
-            "en": "Hello! Your mandate debit failed due to low balance. The ₹{amount} payment on {date} was unsuccessful. Please add funds to your account so the next attempt succeeds."
+        "LOW_BALANCE": {
+            "hi": "Namaste! Aapke ₹{amount} ke subscription payment ke debit time par balance kam tha. Please aap account mein funds add kar dein taaki next eligible date par debit successfully ho sake.",
+            "en": "Hello! Your ₹{amount} mandate debit could not settle due to low balance. Please ensure sufficient funds in your account for the next scheduled attempt."
         },
-        "npci_window_violation": {
-            "hi": "Namaste! Aapke payment timing issue ki wajah se fail ho gaya. Hum automatically optimal time par retry kar rahe hain. Koi action ki zaroorat nahi hai.",
-            "en": "Hello! Your payment failed due to timing issues. We are automatically retrying at the optimal time. No action needed from your end."
+        "NPCI_WINDOW_VIOLATION": {
+            "hi": "Namaste! Payment attempt technical timing issue ki wajah se complete nahi hua. Humne ise compliant execution window mein reschedule kar diya hai. Aapko koi action lene ki zarurat nahi hai.",
+            "en": "Hello! The payment attempt failed due to execution timing windows. We have automatically rescheduled it for the next valid slot. No action needed from your side."
         },
-        "pin_reauth_required": {
-            "hi": "Namaste! ₹{amount} ka payment ke liye UPI PIN re-authentication chahiye. Please aap apne UPI app mein PIN enter karein taaki payment process ho sake.",
-            "en": "Hello! The ₹{amount} payment requires UPI PIN re-authentication. Please enter your PIN in your UPI app so the payment can be processed."
+        "PIN_REAUTH_REQUIRED": {
+            "hi": "Namaste! ₹{amount} ka payment RBI guidelines ke mutabik UPI PIN re-authorization chahta hai. Please apne UPI app mein jakar payment ko approve karein: {link}",
+            "en": "Hello! Per RBI guidelines, payments above ₹15,000 require UPI PIN authorization. Please approve the payment in your UPI app: {link}"
         },
-        "portability_breakage": {
-            "hi": "Namaste! Aapke mandate portability issue ki wajah se fail ho gaya. Please aap mandate dobara register karein ya customer support se contact karein.",
-            "en": "Hello! Your mandate failed due to a portability issue. Please re-register your mandate or contact customer support."
+        "PORTABILITY_BREAKAGE": {
+            "hi": "Namaste! Aapke UPI AutoPay mandate ka app link refresh hona hai. Please is direct link par click karke mandate re-confirm karein: {link}",
+            "en": "Hello! Your UPI AutoPay mandate link requires an app refresh. Please re-confirm your mandate using this secure link: {link}"
         },
-        "promise_reminder": {
-            "hi": "Namaste! Aapne ₹{amount} ka payment {date} tak karne ka promise kiya tha. Please ensure karein ki balance available hai.",
-            "en": "Hello! You had promised to make the ₹{amount} payment by {date}. Please ensure that the balance is available."
-        },
-        "recovery_success": {
-            "hi": "Shubh news! Aapka ₹{amount} ka payment successfully recover ho gaya hai. Thank you for your patience.",
-            "en": "Good news! Your ₹{amount} payment has been successfully recovered. Thank you for your patience."
+        "BANK_TECHNICAL_DECLINE": {
+            "hi": "Namaste! Aapka ₹{amount} ka payment bank network issue ki wajah se nahi ho paaya. Hum eligible off-peak window mein automatically retry karenge.",
+            "en": "Hello! Your ₹{amount} debit encountered a temporary bank network issue. We will retry automatically during the next eligible processing window."
         }
     }
 
     def __init__(self, default_language: str = "hi"):
-        """
-        Initialize communication agent
-        
-        Args:
-            default_language: Default language ("hi" for Hinglish, "en" for English)
-        """
         self.default_language = default_language
+        self.openai_key = os.getenv("OPENAI_API_KEY")
 
-    def generate_message(self, template_key: str, slots: Dict, language: Optional[str] = None) -> str:
+    def generate_personalized_nudge(
+        self,
+        failure_category: str,
+        amount: float,
+        bank_code: str,
+        customer_vpa: str,
+        consent_for_outreach: bool,
+        action_link: Optional[str] = "https://upi.pay/m/approve",
+        language: Optional[str] = None
+    ) -> Dict[str, Any]:
         """
-        Generate message from template with slot filling
-        
-        Args:
-            template_key: Key to select template
-            slots: Dictionary of slot values to fill
-            language: Language to use ("hi" or "en")
-            
-        Returns:
-            Generated message with slots filled
+        Generates personalized customer outreach.
+        Returns suppression notice if DPDPA consent is False.
         """
-        language = language or self.default_language
-        
-        if template_key not in self.TEMPLATES:
-            raise ValueError(f"Template key '{template_key}' not found")
-        
-        if language not in self.TEMPLATES[template_key]:
-            raise ValueError(f"Language '{language}' not available for template '{template_key}'")
-        
-        template = self.TEMPLATES[template_key][language]
-        
-        # Fill slots
-        try:
-            message = template.format(**slots)
-        except KeyError as e:
-            raise ValueError(f"Missing slot for template: {e}")
-        
-        return message
+        # Hard DPDPA Consent Check
+        if not consent_for_outreach:
+            return {
+                "status": "SUPPRESSED_NO_CONSENT",
+                "message": None,
+                "reason": "Outreach suppressed per DPDPA compliance: Customer has not granted outreach consent.",
+                "dpdpa_compliant": True
+            }
 
-    def polish_with_llm(self, message: str, tone: str = "polite") -> str:
-        """
-        Polish message with LLM for natural tone (placeholder for actual LLM integration)
-        
-        Args:
-            message: Base message to polish
-            tone: Desired tone ("polite", "urgent", "friendly")
-            
-        Returns:
-            Polished message
-        """
-        # In production, this would call an LLM API
-        # For now, return the base message
-        # This is a placeholder for the actual LLM integration
-        
-        tone_modifiers = {
-            "polite": "Please ",
-            "urgent": "URGENT: ",
-            "friendly": "Hey! "
-        }
-        
-        if tone in tone_modifiers:
-            return tone_modifiers[tone] + message
-        
-        return message
+        lang = language or self.default_language
+        template_group = self.TEMPLATES.get(failure_category, self.TEMPLATES["BANK_TECHNICAL_DECLINE"])
+        base_text = template_group.get(lang, template_group["hi"])
 
-    def generate_nudge(self, failure_category: str, amount: float, date: str, 
-                      language: str = "hi", tone: str = "polite") -> Dict:
-        """
-        Generate complete nudge message
-        
-        Args:
-            failure_category: Category of failure
-            amount: Payment amount
-            date: Date of payment
-            language: Language for message
-            tone: Tone for message
-            
-        Returns:
-            Dictionary with generated message and metadata
-        """
-        # Map failure category to template key
-        template_mapping = {
-            "LOW_BALANCE": "low_balance",
-            "NPCI_WINDOW_VIOLATION": "npci_window_violation",
-            "PIN_REAUTH_REQUIRED": "pin_reauth_required",
-            "PORTABILITY_BREAKAGE": "portability_breakage"
-        }
-        
-        template_key = template_mapping.get(failure_category, "low_balance")
-        
-        # Generate base message
+        # Slot filling
         slots = {
             "amount": f"{amount:,.0f}",
-            "date": date
+            "bank": bank_code,
+            "link": action_link
         }
-        
-        base_message = self.generate_message(template_key, slots, language)
-        
-        # Polish with LLM
-        polished_message = self.polish_with_llm(base_message, tone)
-        
+        filled_message = base_text.format(**slots)
+
+        # Polish with LLM if OpenAI API Key is configured
+        final_message = self._polish_with_llm(filled_message, failure_category, amount, bank_code)
+
         return {
+            "status": "GENERATED_FOR_DISPATCH",
             "failure_category": failure_category,
-            "language": language,
-            "tone": tone,
-            "message": polished_message,
-            "slots": slots,
-            "dpdpa_consent_note": "Message sent per DPDPA consent framework"
+            "language": lang,
+            "message": final_message,
+            "target_vpa": customer_vpa,
+            "dpdpa_consent_verified": True,
+            "policy_status": "PENDING_COMPLIANCE_GATE"
         }
 
-    def generate_promise_reminder(self, amount: float, promised_date: str, 
-                                  language: str = "hi", tone: str = "polite") -> Dict:
-        """
-        Generate promise-to-pay reminder message
-        
-        Args:
-            amount: Promised amount
-            promised_date: Date payment was promised
-            language: Language for message
-            tone: Tone for message
-            
-        Returns:
-            Dictionary with generated message and metadata
-        """
-        slots = {
-            "amount": f"{amount:,.0f}",
-            "date": promised_date
-        }
-        
-        base_message = self.generate_message("promise_reminder", slots, language)
-        polished_message = self.polish_with_llm(base_message, tone)
-        
-        return {
-            "type": "promise_reminder",
-            "language": language,
-            "tone": tone,
-            "message": polished_message,
-            "slots": slots
-        }
+    def _polish_with_llm(self, base_message: str, category: str, amount: float, bank: str) -> str:
+        """Invokes LLM for natural language tone polishing if key is available"""
+        if not self.openai_key:
+            return base_message
 
-    def generate_recovery_confirmation(self, amount: float, language: str = "hi", 
-                                      tone: str = "friendly") -> Dict:
-        """
-        Generate recovery success confirmation message
-        
-        Args:
-            amount: Recovered amount
-            language: Language for message
-            tone: Tone for message
-            
-        Returns:
-            Dictionary with generated message and metadata
-        """
-        slots = {
-            "amount": f"{amount:,.0f}"
-        }
-        
-        base_message = self.generate_message("recovery_success", slots, language)
-        polished_message = self.polish_with_llm(base_message, tone)
-        
-        return {
-            "type": "recovery_confirmation",
-            "language": language,
-            "tone": tone,
-            "message": polished_message,
-            "slots": slots
-        }
-
-
-if __name__ == "__main__":
-    print("Communication Agent Module")
-    print("This agent generates Hinglish communication templates with LLM tone polish.")
+        try:
+            import openai
+            client = openai.OpenAI(api_key=self.openai_key)
+            prompt = (
+                f"You are the customer recovery voice assistant for Razorpay UPI AutoPay. "
+                f"Refine this customer recovery message into courteous, concise, and helpful Hinglish:\n"
+                f"Context: {category} for ₹{amount:,.0f} on {bank}.\n"
+                f"Base text: '{base_message}'\n"
+                f"Return ONLY the refined message text in 1-2 sentences."
+            )
+            response = client.chat.completions.create(
+                model="gpt-4o-mini",
+                messages=[{"role": "user", "content": prompt}],
+                max_tokens=100,
+                temperature=0.3
+            )
+            return response.choices[0].message.content.strip()
+        except Exception as e:
+            print(f"[CommunicationAgent] LLM polish fallback: {e}")
+            return base_message

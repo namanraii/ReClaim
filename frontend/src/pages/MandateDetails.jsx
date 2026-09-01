@@ -1,14 +1,17 @@
 import React, { useState, useEffect } from 'react';
 import { useParams } from 'react-router-dom';
-import { dashboardAPI, recoveryAPI, complianceAPI } from '../utils/api';
+import { dashboardAPI, recoveryAPI } from '../utils/api';
 import './MandateDetails.css';
 
 function MandateDetails() {
   const { id } = useParams();
   const [mandateData, setMandateData] = useState(null);
+  const [decisionTrace, setDecisionTrace] = useState(null);
   const [auditLog, setAuditLog] = useState([]);
   const [loading, setLoading] = useState(true);
+  const [executing, setExecuting] = useState(false);
   const [error, setError] = useState(null);
+  const [actionMessage, setActionMessage] = useState(null);
 
   useEffect(() => {
     fetchMandateDetails();
@@ -17,203 +20,253 @@ function MandateDetails() {
   const fetchMandateDetails = async () => {
     try {
       setLoading(true);
-      const [explanationRes, auditRes] = await Promise.all([
+      const [explanationRes, traceRes, auditRes] = await Promise.all([
         dashboardAPI.getMandateExplanation(id),
-        dashboardAPI.getAuditLog(id, 20)
+        dashboardAPI.getDecisionTrace(id),
+        dashboardAPI.getAuditLog(id, 25)
       ]);
 
       setMandateData(explanationRes.data);
+      setDecisionTrace(traceRes.data);
       setAuditLog(auditRes.data.audit_log);
       setLoading(false);
     } catch (err) {
-      setError('Failed to fetch mandate details');
+      setError('Failed to fetch mandate decision details');
       setLoading(false);
     }
   };
 
-  const handleRecoveryProcess = async () => {
+  const handleExecutePlan = async () => {
     try {
-      if (mandateData?.failure_events?.length > 0) {
-        const latestFailure = mandateData.failure_events[0];
-        await recoveryAPI.processFailed({
-          mandate_id: id,
-          failure_category: latestFailure.category,
-          confidence: latestFailure.confidence
-        });
-        fetchMandateDetails(); // Refresh data
-      }
+      setExecuting(true);
+      setActionMessage(null);
+      const res = await recoveryAPI.processFailed({ mandate_id: id });
+      setActionMessage(`Plan executed successfully! Action: ${res.data.action}, State: ${res.data.next_state}`);
+      fetchMandateDetails();
     } catch (err) {
-      setError('Failed to process recovery');
+      setError('Failed to execute recovery plan: ' + (err.response?.data?.detail || err.message));
+    } finally {
+      setExecuting(false);
     }
   };
 
-  const handlePortabilityCheck = async () => {
-    try {
-      await recoveryAPI.checkPortability(id);
-      alert('Portability check completed');
-    } catch (err) {
-      setError('Failed to check portability');
-    }
-  };
-
-  if (loading) return <div className="loading">Loading mandate details...</div>;
-  if (error) return <div className="error">{error}</div>;
+  if (loading) return <div className="loading">Loading Mandate Decision Intelligence...</div>;
+  if (error && !mandateData) return <div className="error">{error}</div>;
   if (!mandateData) return <div className="error">Mandate not found</div>;
 
   return (
     <div className="mandate-details">
       <div className="container">
-        <div className="header">
-          <h1>Mandate Details</h1>
-          <p>ID: {id}</p>
+        {/* Navigation / Header */}
+        <div className="nav-bar">
+          <a href="/" className="back-link">← Back to Command Center</a>
+          <span className="mandate-id-pill">MANDATE ID: {id}</span>
         </div>
 
-        {/* Mandate Information */}
-        <div className="info-card">
-          <h2>Mandate Information</h2>
-          <div className="info-grid">
-            <div className="info-item">
-              <label>Customer VPA:</label>
-              <span>{mandateData.mandate.customer_vpa}</span>
-            </div>
-            <div className="info-item">
-              <label>Bank Code:</label>
-              <span>{mandateData.mandate.bank_code}</span>
-            </div>
-            <div className="info-item">
-              <label>PSP App:</label>
-              <span>{mandateData.mandate.psp_app}</span>
-            </div>
-            <div className="info-item">
-              <label>Amount:</label>
-              <span>₹{mandateData.mandate.amount.toLocaleString()}</span>
-            </div>
-            <div className="info-item">
-              <label>Status:</label>
-              <span className={`status-badge status-${mandateData.mandate.status.toLowerCase()}`}>
-                {mandateData.mandate.status}
-              </span>
-            </div>
-          </div>
-        </div>
+        {actionMessage && <div className="alert-success">{actionMessage}</div>}
 
-        {/* Recovery Actions */}
-        <div className="actions-card">
-          <h2>Recovery Actions</h2>
-          <div className="actions-grid">
-            <button className="btn btn-primary" onClick={handleRecoveryProcess}>
-              Process Recovery
-            </button>
-            <button className="btn btn-secondary" onClick={handlePortabilityCheck}>
-              Check Portability
-            </button>
-          </div>
-        </div>
-
-        {/* Recent Attempts */}
-        <div className="table-card">
-          <h2>Recent Debit Attempts</h2>
-          <table>
-            <thead>
-              <tr>
-                <th>ID</th>
-                <th>Scheduled</th>
-                <th>Status</th>
-                <th>Attempt #</th>
-              </tr>
-            </thead>
-            <tbody>
-              {mandateData.recent_attempts.map((attempt) => (
-                <tr key={attempt.id}>
-                  <td>{attempt.id.substring(0, 8)}...</td>
-                  <td>{new Date(attempt.scheduled_at).toLocaleString()}</td>
-                  <td>
-                    <span className={`status-badge status-${attempt.status.toLowerCase()}`}>
-                      {attempt.status}
-                    </span>
-                  </td>
-                  <td>{attempt.attempt_number}</td>
-                </tr>
-              ))}
-            </tbody>
-          </table>
-        </div>
-
-        {/* Failure Events */}
-        <div className="table-card">
-          <h2>Failure Events</h2>
-          <table>
-            <thead>
-              <tr>
-                <th>Category</th>
-                <th>Confidence</th>
-                <th>Detected At</th>
-              </tr>
-            </thead>
-            <tbody>
-              {mandateData.failure_events.map((event, index) => (
-                <tr key={index}>
-                  <td>{event.category}</td>
-                  <td>{(event.confidence * 100).toFixed(1)}%</td>
-                  <td>{new Date(event.detected_at).toLocaleString()}</td>
-                </tr>
-              ))}
-            </tbody>
-          </table>
-        </div>
-
-        {/* Recovery Outcome */}
-        {mandateData.recovery_outcome && (
-          <div className="info-card">
-            <h2>Recovery Outcome</h2>
-            <div className="info-grid">
-              <div className="info-item">
-                <label>State:</label>
-                <span>{mandateData.recovery_outcome.state}</span>
-              </div>
-              <div className="info-item">
-                <label>Recovery Attempts:</label>
-                <span>{mandateData.recovery_outcome.recovery_attempts}</span>
-              </div>
-              {mandateData.recovery_outcome.final_amount_recovered && (
-                <div className="info-item">
-                  <label>Amount Recovered:</label>
-                  <span>₹{mandateData.recovery_outcome.final_amount_recovered.toLocaleString()}</span>
+        {/* DECISION INTELLIGENCE TRACE CARD (PRIMARY) */}
+        {decisionTrace && (
+          <div className="trace-card">
+            <div className="trace-header">
+              <div>
+                <div className="trace-badge-row">
+                  <span className="trace-id-badge">DECISION ID: {decisionTrace.decision_id}</span>
+                  <span className={`status-pill pill-${decisionTrace.execution_status.toLowerCase()}`}>
+                    ● {decisionTrace.execution_status}
+                  </span>
                 </div>
-              )}
+                <h2>🧠 AI Revenue Recovery Decision Trace</h2>
+                <p className="trace-subtitle">Autonomous Diagnosis, Expected Value Optimization & Compliance Approval</p>
+              </div>
+
+              <div className="erv-hero-box">
+                <span className="erv-label">OPTIMAL RECOVERY ERV</span>
+                <span className="erv-value">₹{decisionTrace.expected_recovered_revenue?.toLocaleString()}</span>
+                <span className="risk-sub">Revenue at Risk: ₹{decisionTrace.revenue_at_risk?.toLocaleString()}</span>
+              </div>
+            </div>
+
+            {/* Diagnosis & Evidence Grid */}
+            <div className="trace-section-grid">
+              <div className="diag-box">
+                <h3>Root Cause Diagnosis</h3>
+                <div className="diag-title">{decisionTrace.diagnosis}</div>
+                <div className="diag-meta">
+                  <span>Confidence: {(decisionTrace.confidence * 100).toFixed(0)}%</span>
+                  <span className="tier-badge">{decisionTrace.resolution_tier}</span>
+                </div>
+              </div>
+
+              <div className="evidence-box">
+                <h3>Contextual Evidence Synthesized</h3>
+                <ul className="evidence-list">
+                  {decisionTrace.evidence_points?.map((ev, idx) => (
+                    <li key={idx}>✓ {ev}</li>
+                  ))}
+                </ul>
+              </div>
+            </div>
+
+            {/* Candidate Action ERV Matrix & Counterfactuals */}
+            <div className="candidate-matrix-section">
+              <h3>Candidate Action Evaluation & Counterfactual Matrix</h3>
+              <p className="matrix-subtitle">Evaluates ERV = P(Recovery|Action)*Amount - Friction - Risk across all playbook candidates</p>
+              <table className="matrix-table">
+                <thead>
+                  <tr>
+                    <th>Candidate Playbook</th>
+                    <th>P(Success)</th>
+                    <th>Friction (₹)</th>
+                    <th>Expected Revenue (ERV)</th>
+                    <th>Compliance Gate</th>
+                    <th>Decision</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {decisionTrace.candidate_evaluations?.map((cand, idx) => (
+                    <tr key={idx} className={cand.is_selected ? 'selected-row' : ''}>
+                      <td>
+                        <strong>{cand.action}</strong>
+                        <div className="cand-desc">{cand.description}</div>
+                      </td>
+                      <td>{(cand.recovery_probability * 100).toFixed(0)}%</td>
+                      <td>₹{cand.friction_cost}</td>
+                      <td>
+                        <strong className="erv-matrix-val">₹{cand.expected_revenue_value?.toLocaleString()}</strong>
+                      </td>
+                      <td>
+                        <span className={`compliance-tag ${cand.is_compliant ? 'tag-approved' : 'tag-blocked'}`}>
+                          {cand.is_compliant ? '✓ APPROVED' : '✕ BLOCKED'}
+                        </span>
+                      </td>
+                      <td>
+                        {cand.is_selected ? (
+                          <span className="selected-pill">★ SELECTED (MAX ERV)</span>
+                        ) : (
+                          <span className="alt-pill">Counterfactual</span>
+                        )}
+                      </td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </div>
+
+            {/* Counterfactual Explanation Box */}
+            <div className="counterfactual-box">
+              <h3>🔍 Why This Recovery Action? (Decision Rationale)</h3>
+              <pre className="counterfactual-text">{decisionTrace.counterfactual_explanation}</pre>
+            </div>
+
+            {/* Compliance Approval Token Section */}
+            {decisionTrace.compliance_token && (
+              <div className="token-box">
+                <div className="token-header">
+                  <span className="token-id">TOKEN: {decisionTrace.compliance_token.decision_id}</span>
+                  <span className="token-auth-status">
+                    {decisionTrace.compliance_token.approved ? '✓ COMPLIANCE GATE AUTHORIZED' : '✕ BLOCKED'}
+                  </span>
+                </div>
+                <div className="token-details-grid">
+                  <div>
+                    <strong>Action:</strong> {decisionTrace.compliance_token.action}
+                  </div>
+                  <div>
+                    <strong>Valid Until:</strong> {new Date(decisionTrace.compliance_token.valid_until).toLocaleString()}
+                  </div>
+                  <div>
+                    <strong>Rules Verified:</strong> {decisionTrace.compliance_token.rules_checked?.join(', ')}
+                  </div>
+                </div>
+                <div className="token-citations">
+                  <strong>Authoritative Circular Citations:</strong>
+                  <ul>
+                    {decisionTrace.compliance_token.citations?.map((c, i) => (
+                      <li key={i}>
+                        <strong>[{c.authority}]</strong> {c.circular}: {c.title}
+                      </li>
+                    ))}
+                  </ul>
+                </div>
+              </div>
+            )}
+
+            {/* Action Trigger */}
+            <div className="execution-bar">
+              <button
+                className="btn-execute-plan"
+                disabled={executing || !decisionTrace.compliance_token.approved}
+                onClick={handleExecutePlan}
+              >
+                {executing ? 'Executing Recovery...' : '⚡ Execute Approved Recovery Playbook'}
+              </button>
+              <span className="gate-note">
+                🔒 Protected by Deterministic Compliance Gate · No payment executes without approval token
+              </span>
             </div>
           </div>
         )}
 
-        {/* Audit Log */}
-        <div className="table-card">
-          <h2>Audit Log</h2>
-          <table>
-            <thead>
-              <tr>
-                <th>Timestamp</th>
-                <th>Event Type</th>
-                <th>Actor</th>
-                <th>Reason</th>
-                <th>Compliant</th>
-              </tr>
-            </thead>
-            <tbody>
-              {auditLog.map((entry) => (
-                <tr key={entry.id}>
-                  <td>{new Date(entry.timestamp).toLocaleString()}</td>
-                  <td>{entry.event_type}</td>
-                  <td>{entry.actor}</td>
-                  <td>{entry.reason}</td>
-                  <td>
-                    <span className={`status-badge status-${entry.compliant ? 'success' : 'failed'}`}>
-                      {entry.compliant ? 'Yes' : 'No'}
-                    </span>
-                  </td>
+        {/* Mandate Info & Audit Trail */}
+        <div className="mandate-lower-grid">
+          {/* Mandate Info */}
+          <div className="card mandate-info-card">
+            <h2>Mandate Specifications</h2>
+            <div className="spec-list">
+              <div className="spec-item">
+                <label>Customer VPA:</label>
+                <span>{mandateData.mandate.customer_vpa}</span>
+              </div>
+              <div className="spec-item">
+                <label>Issuing Bank:</label>
+                <span>{mandateData.mandate.bank_code}</span>
+              </div>
+              <div className="spec-item">
+                <label>PSP App:</label>
+                <span>{mandateData.mandate.psp_app}</span>
+              </div>
+              <div className="spec-item">
+                <label>Amount:</label>
+                <span>₹{mandateData.mandate.amount.toLocaleString()}</span>
+              </div>
+              <div className="spec-item">
+                <label>Mandate Status:</label>
+                <span className="status-tag">{mandateData.mandate.status}</span>
+              </div>
+            </div>
+          </div>
+
+          {/* Audit Trail */}
+          <div className="card audit-trail-card">
+            <h2>Immutable Audit Trail</h2>
+            <table className="audit-table">
+              <thead>
+                <tr>
+                  <th>Timestamp</th>
+                  <th>Event</th>
+                  <th>Actor</th>
+                  <th>Compliance</th>
+                  <th>Reason</th>
                 </tr>
-              ))}
-            </tbody>
-          </table>
+              </thead>
+              <tbody>
+                {auditLog.map((entry) => (
+                  <tr key={entry.id}>
+                    <td>{new Date(entry.timestamp).toLocaleTimeString()}</td>
+                    <td><span className="event-pill">{entry.event_type}</span></td>
+                    <td>{entry.actor}</td>
+                    <td>
+                      <span className={`compliance-tag ${entry.compliant ? 'tag-approved' : 'tag-blocked'}`}>
+                        {entry.compliant ? 'Compliant' : 'Blocked'}
+                      </span>
+                    </td>
+                    <td className="reason-cell">{entry.reason}</td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
         </div>
       </div>
     </div>

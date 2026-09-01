@@ -18,8 +18,8 @@ router = APIRouter(prefix="/recovery", tags=["recovery"])
 
 class RecoveryRequest(BaseModel):
     mandate_id: str
-    failure_category: FailureCategory
-    confidence: float
+    failure_category: Optional[FailureCategory] = None
+    confidence: Optional[float] = None
 
 
 class PortabilityCheckRequest(BaseModel):

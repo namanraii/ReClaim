@@ -1,56 +1,106 @@
 """
 Constraint-Aware Recovery Agent
-Implements state machine for mandate recovery with NPCI compliance enforcement
+Implements state machine for mandate recovery with Decision Intelligence & Token-Based Compliance Gate
 """
 
 from datetime import datetime, timedelta
-from typing import Dict, Optional, Tuple
+from typing import Dict, Optional, Tuple, Any
 from enum import Enum
 import uuid
+import json
 
-from app.compliance import NPCIComplianceEngine, ComplianceViolationType
+from app.compliance import NPCIComplianceEngine, ComplianceApprovalToken
+from app.models.hybrid_diagnostician import HybridDiagnostician, DiagnosticResult
+from app.agents.recovery_planner import RecoveryPlanner, DecisionTrace, RecoveryActionType
 from app.db.models import (
     Mandate, DebitAttempt, DebitStatus, FailureEvent, RecoveryOutcome, 
-    RecoveryState, FailureCategory
+    RecoveryState, FailureCategory, AuditLog
 )
 
 
 class RecoveryAgent:
     """
     Constraint-Aware Recovery Agent that enforces NPCI rules deterministically
-    while using ML to prioritize compliant retry slots.
+    while using Decision Intelligence (ERV) to choose the optimal recovery playbook.
     
     State Machine: FAILED → DIAGNOSED → RETRY_SCHEDULED → RETRYING → RECOVERED | EXHAUSTED | NEEDS_USER_ACTION
     """
 
     def __init__(self, db_session):
-        """
-        Initialize recovery agent
-        
-        Args:
-            db_session: SQLAlchemy database session
-        """
         self.db = db_session
         self.compliance_engine = NPCIComplianceEngine()
+        self.diagnostician = HybridDiagnostician()
+        self.planner = RecoveryPlanner()
 
-    def process_failed_mandate(self, mandate_id: str, failure_category: FailureCategory,
-                              confidence: float) -> Dict:
+    def process_failed_mandate(
+        self,
+        mandate_id: str,
+        failure_category: Optional[FailureCategory] = None,
+        confidence: Optional[float] = None
+    ) -> Dict[str, Any]:
         """
-        Process a failed mandate through the recovery state machine
-        
-        Args:
-            mandate_id: ID of the failed mandate
-            failure_category: Classified failure category
-            confidence: Classification confidence score
-            
-        Returns:
-            Dictionary with recovery action and next state
+        Process a failed mandate through the Decision Intelligence pipeline & State Machine.
         """
         mandate = self.db.query(Mandate).filter(Mandate.id == mandate_id).first()
         if not mandate:
             raise ValueError(f"Mandate {mandate_id} not found")
 
-        # Get or create recovery outcome
+        # Fetch recent debit attempts for history context
+        attempts = (
+            self.db.query(DebitAttempt)
+            .filter(DebitAttempt.mandate_id == mandate_id)
+            .order_by(DebitAttempt.scheduled_at.desc())
+            .limit(6)
+            .all()
+        )
+        latest_attempt = attempts[0] if attempts else None
+        
+        attempt_dict = {
+            "scheduled_at": latest_attempt.scheduled_at.isoformat() if latest_attempt else datetime.utcnow().isoformat(),
+            "attempt_number": latest_attempt.attempt_number if latest_attempt else 1,
+            "response_code": latest_attempt.response_code if latest_attempt else "U51"
+        }
+        
+        mandate_dict = {
+            "id": mandate.id,
+            "amount": mandate.amount,
+            "bank_code": mandate.bank_code,
+            "customer_vpa": mandate.customer_vpa,
+            "psp_app": mandate.psp_app,
+            "category": mandate.category,
+            "frequency": mandate.frequency,
+            "consent_for_outreach": mandate.consent_for_outreach,
+            "pin_reauth_required": mandate.pin_reauth_required,
+            "created_at": mandate.created_at.isoformat() if mandate.created_at else None,
+            "last_successful_debit": mandate.last_successful_debit.isoformat() if mandate.last_successful_debit else None,
+            "portability_cooldown_until": mandate.portability_cooldown_until.isoformat() if mandate.portability_cooldown_until else None
+        }
+
+        history_list = [
+            {
+                "attempt_number": a.attempt_number,
+                "scheduled_at": a.scheduled_at.isoformat() if a.scheduled_at else "",
+                "status": a.status.value,
+                "response_code": a.response_code,
+                "response_message": a.response_message
+            }
+            for a in attempts
+        ]
+
+        # 1. Run Hybrid 3-Tier Diagnostician
+        diagnosis: DiagnosticResult = self.diagnostician.diagnose_failure(
+            mandate_dict=mandate_dict,
+            attempt_dict=attempt_dict,
+            attempts_history=history_list
+        )
+
+        from app.models.evidence import build_evidence_packet
+        evidence = build_evidence_packet(mandate_dict, attempt_dict, history_list)
+
+        # 2. Run Expected-Revenue Recovery Planner
+        decision_trace: DecisionTrace = self.planner.plan_recovery(evidence, diagnosis)
+
+        # 3. Get or create recovery outcome record
         recovery_outcome = self.db.query(RecoveryOutcome).filter(
             RecoveryOutcome.mandate_id == mandate_id
         ).first()
@@ -64,284 +114,124 @@ class RecoveryAgent:
             )
             self.db.add(recovery_outcome)
 
-        # State machine transitions
-        if recovery_outcome.state == RecoveryState.FAILED:
-            return self._transition_to_diagnosed(recovery_outcome, mandate, failure_category, confidence)
-        
-        elif recovery_outcome.state == RecoveryState.DIAGNOSED:
-            return self._transition_to_retry_scheduled(recovery_outcome, mandate, failure_category)
-        
-        elif recovery_outcome.state == RecoveryState.RETRY_SCHEDULED:
-            return self._transition_to_retrying(recovery_outcome, mandate)
-        
-        elif recovery_outcome.state == RecoveryState.RETRYING:
-            return self._evaluate_retry_result(recovery_outcome, mandate)
-        
-        elif recovery_outcome.state in [RecoveryState.RECOVERED, RecoveryState.EXHAUSTED, 
-                                        RecoveryState.NEEDS_USER_ACTION]:
-            return {"action": "no_action", "reason": f"Terminal state: {recovery_outcome.state}"}
-        
-        else:
-            return {"action": "error", "reason": f"Unknown state: {recovery_outcome.state}"}
+        # 4. State Machine Transitions with Compliance Gate Verification
+        if not decision_trace.compliance_token.approved:
+            # Hard Block: Compliance violation encountered
+            return self._transition_to_exhausted(
+                recovery_outcome,
+                mandate,
+                reason=f"Compliance Gate Rejection: {decision_trace.compliance_token.rejection_reason}",
+                decision_trace=decision_trace
+            )
 
-    def _transition_to_diagnosed(self, recovery_outcome: RecoveryOutcome, mandate: Mandate,
-                               failure_category: FailureCategory, confidence: float) -> Dict:
-        """Transition from FAILED to DIAGNOSED state"""
+        # Transition to DIAGNOSED
         recovery_outcome.state = RecoveryState.DIAGNOSED
         recovery_outcome.updated_at = datetime.utcnow()
-        
-        # Log audit entry
+
+        # Log Diagnostic & Plan Audit Event with Token Citation
         self._log_audit_event(
             mandate_id=mandate.id,
-            event_type="CLASSIFICATION",
-            event_data={"category": failure_category.value, "confidence": confidence},
-            reason=f"Root cause classified as {failure_category.value} with {confidence:.2f} confidence",
-            actor="RecoveryAgent"
+            event_type="AI_DECISION_PLAN",
+            event_data=decision_trace.dict(),
+            reason=(
+                f"Diagnosed as {diagnosis.failure_category} ({diagnosis.resolution_tier}). "
+                f"Selected '{decision_trace.selected_action.value}' (ERV: ₹{decision_trace.expected_recovered_revenue:,.0f}). "
+                f"Compliance Token: {decision_trace.compliance_token.decision_id} (APPROVED)."
+            ),
+            actor="RecoveryPlanner",
+            compliant=decision_trace.compliance_token.approved,
+            compliance_notes=f"Rules verified: {', '.join(decision_trace.compliance_token.rules_checked)}"
         )
-        
-        self.db.commit()
-        
-        return {
-            "action": "diagnosed",
-            "next_state": RecoveryState.DIAGNOSED,
-            "failure_category": failure_category.value,
-            "confidence": confidence
-        }
-
-    def _transition_to_retry_scheduled(self, recovery_outcome: RecoveryOutcome, mandate: Mandate,
-                                      failure_category: FailureCategory) -> Dict:
-        """Transition from DIAGNOSED to RETRY_SCHEDULED state"""
-        
-        # Check if we've exhausted retry attempts
-        if recovery_outcome.recovery_attempts >= self.compliance_engine.MAX_RETRY_ATTEMPTS:
-            return self._transition_to_exhausted(recovery_outcome, mandate, "Max retry attempts reached")
-
-        # Get next compliant retry window
-        retry_window = self._get_next_compliant_retry_window(mandate, recovery_outcome.recovery_attempts + 1)
-        
-        if not retry_window:
-            return self._transition_to_exhausted(recovery_outcome, mandate, "No compliant retry window available")
-
-        window_start, window_end, complies, violations = retry_window
-
-        if not complies:
-            return self._transition_to_exhausted(recovery_outcome, mandate, f"Compliance violations: {violations}")
-
-        recovery_outcome.state = RecoveryState.RETRY_SCHEDULED
-        recovery_outcome.updated_at = datetime.utcnow()
-        
-        # Log audit entry
-        self._log_audit_event(
-            mandate_id=mandate.id,
-            event_type="RETRY_SCHEDULED",
-            event_data={
-                "window_start": window_start.isoformat(),
-                "window_end": window_end.isoformat(),
-                "attempt_number": recovery_outcome.recovery_attempts + 1
-            },
-            reason=f"Retry scheduled for {window_start} (compliant with NPCI rules)",
-            actor="RecoveryAgent",
-            compliant=True
-        )
-        
-        self.db.commit()
-        
-        return {
-            "action": "retry_scheduled",
-            "next_state": RecoveryState.RETRY_SCHEDULED,
-            "retry_window_start": window_start.isoformat(),
-            "retry_window_end": window_end.isoformat(),
-            "attempt_number": recovery_outcome.recovery_attempts + 1
-        }
-
-    def _make_idempotency_key(self, mandate_id: str, attempt_number: int) -> str:
-        return f"{mandate_id}-attempt-{attempt_number}"
-
-    def _idempotency_key_exists(self, key: str) -> bool:
-        existing = self.db.query(DebitAttempt).filter(
-            DebitAttempt.idempotency_key == key
-        ).first()
-        return existing is not None
-
-    def _transition_to_retrying(self, recovery_outcome: RecoveryOutcome, mandate: Mandate) -> Dict:
-        """Transition from RETRY_SCHEDULED to RETRYING state."""
-        attempt_number = recovery_outcome.recovery_attempts + 1
-        idempotency_key = self._make_idempotency_key(mandate.id, attempt_number)
-
-        if self._idempotency_key_exists(idempotency_key):
-            existing = self.db.query(DebitAttempt).filter(
-                DebitAttempt.idempotency_key == idempotency_key
-            ).first()
-            if existing and existing.status == DebitStatus.SUCCESS:
-                return self._transition_to_recovered(recovery_outcome, mandate)
-            return {
-                "action": "duplicate_retry_blocked",
-                "next_state": recovery_outcome.state,
-                "reason": f"Idempotency key {idempotency_key} already used",
-            }
-
-        retry_attempt = DebitAttempt(
-            id=str(uuid.uuid4()),
-            mandate_id=mandate.id,
-            scheduled_at=datetime.utcnow(),
-            amount=mandate.amount,
-            status=DebitStatus.RETRYING,
-            attempt_number=attempt_number,
-            idempotency_key=idempotency_key,
-        )
-        self.db.add(retry_attempt)
-
-        recovery_outcome.state = RecoveryState.RETRYING
-        recovery_outcome.recovery_attempts += 1
-        recovery_outcome.updated_at = datetime.utcnow()
-
-        self._log_audit_event(
-            mandate_id=mandate.id,
-            event_type="RETRYING",
-            event_data={
-                "attempt_number": recovery_outcome.recovery_attempts,
-                "idempotency_key": idempotency_key,
-            },
-            reason=f"Executing retry attempt {recovery_outcome.recovery_attempts}",
-            actor="RecoveryAgent",
-        )
-
         self.db.commit()
 
-        return {
-            "action": "retrying",
-            "next_state": RecoveryState.RETRYING,
-            "attempt_number": recovery_outcome.recovery_attempts,
-            "idempotency_key": idempotency_key,
-        }
-
-    def _evaluate_retry_result(self, recovery_outcome: RecoveryOutcome, mandate: Mandate) -> Dict:
-        """Evaluate result of retry attempt and transition to appropriate state"""
-        
-        # In a real system, this would check the actual debit result
-        # For now, we'll simulate based on failure category
-        
-        # If retry was successful (simulated)
-        if self._simulate_retry_success(mandate):
-            return self._transition_to_recovered(recovery_outcome, mandate)
-        
-        # If retry failed but more attempts available
-        if recovery_outcome.recovery_attempts < self.compliance_engine.MAX_RETRY_ATTEMPTS:
-            recovery_outcome.state = RecoveryState.DIAGNOSED  # Go back for re-evaluation
-            recovery_outcome.updated_at = datetime.utcnow()
+        # Schedule or Execute Action
+        if decision_trace.selected_action in [
+            RecoveryActionType.RETRY_OPTIMAL_WINDOW,
+            RecoveryActionType.SALARY_ALIGNED_RETRY,
+            RecoveryActionType.SALARY_RETRY_AND_NUDGE
+        ]:
+            recovery_outcome.state = RecoveryState.RETRY_SCHEDULED
             self.db.commit()
-            
             return {
-                "action": "retry_failed",
-                "next_state": RecoveryState.DIAGNOSED,
-                "reason": "Retry failed, re-evaluating"
+                "action": decision_trace.selected_action.value,
+                "next_state": RecoveryState.RETRY_SCHEDULED.value,
+                "decision_trace": decision_trace.dict(),
+                "compliance_token": decision_trace.compliance_token.dict()
             }
-        
-        # Exhausted all attempts
-        return self._transition_to_exhausted(recovery_outcome, mandate, "All retry attempts exhausted")
+        elif decision_trace.selected_action == RecoveryActionType.CUSTOMER_NUDGE:
+            recovery_outcome.state = RecoveryState.NEEDS_USER_ACTION
+            self.db.commit()
+            return {
+                "action": "customer_nudge_dispatched",
+                "next_state": RecoveryState.NEEDS_USER_ACTION.value,
+                "decision_trace": decision_trace.dict(),
+                "compliance_token": decision_trace.compliance_token.dict()
+            }
+        elif decision_trace.selected_action == RecoveryActionType.HUMAN_ESCALATION:
+            recovery_outcome.state = RecoveryState.NEEDS_USER_ACTION
+            self.db.commit()
+            return {
+                "action": "human_escalation",
+                "next_state": RecoveryState.NEEDS_USER_ACTION.value,
+                "decision_trace": decision_trace.dict(),
+                "compliance_token": decision_trace.compliance_token.dict()
+            }
+        else:
+            return {
+                "action": decision_trace.selected_action.value,
+                "next_state": recovery_outcome.state.value,
+                "decision_trace": decision_trace.dict(),
+                "compliance_token": decision_trace.compliance_token.dict()
+            }
 
-    def _transition_to_recovered(self, recovery_outcome: RecoveryOutcome, mandate: Mandate) -> Dict:
-        """Transition to RECOVERED state"""
-        recovery_outcome.state = RecoveryState.RECOVERED
-        recovery_outcome.final_amount_recovered = mandate.amount
-        recovery_outcome.final_outcome = "Recovery successful"
-        recovery_outcome.updated_at = datetime.utcnow()
-        
-        # Log audit entry
-        self._log_audit_event(
-            mandate_id=mandate.id,
-            event_type="RECOVERED",
-            event_data={"amount_recovered": mandate.amount},
-            reason=f"Successfully recovered ₹{mandate.amount}",
-            actor="RecoveryAgent"
-        )
-        
-        self.db.commit()
-        
-        return {
-            "action": "recovered",
-            "next_state": RecoveryState.RECOVERED,
-            "amount_recovered": mandate.amount
-        }
-
-    def _transition_to_exhausted(self, recovery_outcome: RecoveryOutcome, mandate: Mandate, 
-                                reason: str) -> Dict:
-        """Transition to EXHAUSTED state (stopping rule)"""
+    def _transition_to_exhausted(
+        self,
+        recovery_outcome: RecoveryOutcome,
+        mandate: Mandate,
+        reason: str,
+        decision_trace: Optional[DecisionTrace] = None
+    ) -> Dict[str, Any]:
         recovery_outcome.state = RecoveryState.EXHAUSTED
         recovery_outcome.final_outcome = reason
         recovery_outcome.updated_at = datetime.utcnow()
-        
-        # Log audit entry
+
         self._log_audit_event(
             mandate_id=mandate.id,
-            event_type="STOP",
-            event_data={"reason": reason},
+            event_type="COMPLIANCE_BLOCK_STOP",
+            event_data=decision_trace.dict() if decision_trace else {"reason": reason},
             reason=f"Stopping rule triggered: {reason}",
-            actor="RecoveryAgent"
+            actor="ComplianceGate",
+            compliant=False,
+            compliance_notes="Hard block enforced by policy engine"
         )
-        
         self.db.commit()
-        
+
         return {
-            "action": "exhausted",
-            "next_state": RecoveryState.EXHAUSTED,
-            "reason": reason
+            "action": "blocked_and_exhausted",
+            "next_state": RecoveryState.EXHAUSTED.value,
+            "reason": reason,
+            "decision_trace": decision_trace.dict() if decision_trace else None
         }
 
-    def _get_next_compliant_retry_window(self, mandate: Mandate, attempt_number: int) -> Optional[Tuple]:
-        """
-        Get next compliant retry window based on NPCI rules
-        
-        Returns:
-            Tuple of (window_start, window_end, is_compliant, violations) or None
-        """
-        from_time = datetime.utcnow() + timedelta(minutes=5)  # Minimum 5 minutes from now
-        
-        # Get next valid execution window
-        window_start, window_end = self.compliance_engine.get_next_valid_execution_window(from_time)
-        
-        # Validate against all NPCI rules
-        is_compliant, violations = self.compliance_engine.validate_retry_schedule(
-            scheduled_time=window_start,
-            attempt_number=attempt_number,
-            mandate_amount=mandate.amount,
-            mandate_category=None,  # Would need to be stored in mandate
-            last_port_date=mandate.portability_cooldown_until
-        )
-        
-        return (window_start, window_end, is_compliant, violations)
-
-    def _simulate_retry_success(self, mandate: Mandate, failure_category: FailureCategory = None) -> bool:
-        """Deterministic category-aware retry success simulation."""
-        import hashlib
-        from app.evaluation.simulator import CATEGORY_RECOVERY_RATES, deterministic_random
-
-        category = failure_category.value if failure_category else "BANK_TECHNICAL_DECLINE"
-        rate = CATEGORY_RECOVERY_RATES.get(category, 0.55)
-        return deterministic_random(mandate.id, "retry") < rate
-
-    def _log_audit_event(self, mandate_id: str, event_type: str, event_data: Dict,
-                        reason: str, actor: str, compliant: bool = True, 
-                        compliance_notes: Optional[str] = None):
-        """Log event to audit trail"""
-        from app.db.models import AuditLog
-        import json
-        
+    def _log_audit_event(
+        self,
+        mandate_id: str,
+        event_type: str,
+        event_data: Dict,
+        reason: str,
+        actor: str,
+        compliant: bool = True,
+        compliance_notes: Optional[str] = None
+    ):
         audit_log = AuditLog(
             id=str(uuid.uuid4()),
             mandate_id=mandate_id,
             event_type=event_type,
-            event_data=json.dumps(event_data),
+            event_data=json.dumps(event_data, default=str),
             reason=reason,
             actor=actor,
             timestamp=datetime.utcnow(),
             compliant=compliant,
             compliance_notes=compliance_notes
         )
-        
         self.db.add(audit_log)
-
-
-if __name__ == "__main__":
-    print("Recovery Agent Module")
-    print("This agent implements the constraint-aware recovery state machine with NPCI compliance enforcement.")
