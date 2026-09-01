@@ -153,16 +153,18 @@ class HybridDiagnostician:
                 ml_prediction = preds[0]
                 ml_confidence = float(max(probs[0]))
 
-                # Real SHAP top feature contribution inspection
+                # Real SHAP top feature contribution toward predicted class (signed, not max-across-classes)
                 try:
                     shap_res = classifier.explain_prediction(pred_df, index=0)
-                    top_features = sorted(
-                        shap_res.get("feature_importance", {}).items(),
-                        key=lambda x: abs(x[1]),
-                        reverse=True
-                    )[:2]
+                    fi = shap_res.get("feature_importance", {})
+                    # Sort by signed value descending: largest positive = strongest push toward predicted class
+                    top_features = sorted(fi.items(), key=lambda x: x[1], reverse=True)[:2]
                     for feat, impact in top_features:
-                        shap_evidence.append(f"Model SHAP: '{feat}' had significant predictive contribution (SHAP value: {impact:+.3f}).")
+                        direction = "toward" if impact > 0 else "against"
+                        shap_evidence.append(
+                            f"SHAP ({shap_res.get('predicted_class_label', ml_prediction)}): "
+                            f"'{feat}' pushed {direction} this diagnosis (value: {impact:+.3f})."
+                        )
                 except Exception as shap_err:
                     print(f"[HybridDiagnostician] SHAP inspection failed: {shap_err}")
 

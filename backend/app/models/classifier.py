@@ -300,51 +300,61 @@ class FailureClassifier:
         """
         # Prepare features
         features_df = self.prepare_features(df)
-        
+
         # Encode features
         features_df = self.encode_features(features_df, fit=False)
-        
+
         for col in self.feature_names:
             if col not in features_df.columns:
                 features_df[col] = 0
         X = features_df[self.feature_names]
-        
+
         # Get SHAP values
         shap_values = self.shap_explainer.shap_values(X.iloc[[index]])
-        
-        # If multi-class, shap_values is a 3D array or list of arrays
+
+        # Get the predicted class index for this sample so we explain the actual prediction,
+        # not an arbitrary class. Using signed values (no abs) preserves directional info:
+        # positive = feature pushed toward this class, negative = pushed against.
+        predicted_encoded = int(self.model.predict(X.iloc[[index]])[0])
+        class_idx = predicted_encoded  # direct index into the classes dimension
+
+        # Normalise shap_values into a (n_features, n_classes) matrix regardless of SHAP version
         if isinstance(shap_values, list):
-            # List of arrays per class
-            shap_matrix = np.array([sv[0] for sv in shap_values])  # shape: (n_classes, n_features)
-            scalar_importance = {
-                feat: float(np.max(np.abs(shap_matrix[:, idx])))
-                for idx, feat in enumerate(self.feature_names)
-            }
-            raw_shap = shap_values[0][0].tolist() if len(shap_values) > 0 else []
+            # Old SHAP API: list of (n_samples, n_features) arrays, one per class
+            # shap_values[class_idx][0] is the feature vector for class class_idx, sample 0
+            sample_shap_per_class = np.stack([sv[0] for sv in shap_values], axis=1)  # (n_features, n_classes)
         elif len(shap_values.shape) == 3:
-            # 3D numpy array: (n_samples, n_features, n_classes)
-            sample_shap = shap_values[0]  # shape: (n_features, n_classes)
-            scalar_importance = {
-                feat: float(np.max(np.abs(sample_shap[idx, :])))
-                for idx, feat in enumerate(self.feature_names)
-            }
-            raw_shap = sample_shap[:, 0].tolist()
+            # New SHAP API: (n_samples, n_features, n_classes)
+            sample_shap_per_class = shap_values[0]  # (n_features, n_classes)
         else:
-            sample_shap = shap_values[0]
-            scalar_importance = {
-                feat: float(np.abs(sample_shap[idx]))
-                for idx, feat in enumerate(self.feature_names)
-            }
-            raw_shap = sample_shap.tolist()
-        
-        # Create explanation dictionary
+            # Binary or unexpected: (n_samples, n_features) — treat as single class
+            sample_shap_per_class = shap_values[0].reshape(-1, 1)
+            class_idx = 0
+
+        # Slice to the predicted class — signed values, not max-across-all-classes
+        class_shap = sample_shap_per_class[:, class_idx]  # (n_features,)
+
+        feature_importance = {
+            feat: float(class_shap[idx])
+            for idx, feat in enumerate(self.feature_names)
+        }
+        raw_shap = class_shap.tolist()
+
+        base_val = self.shap_explainer.expected_value
+        if isinstance(base_val, (list, np.ndarray)):
+            base_val = float(base_val[class_idx])
+        else:
+            base_val = float(base_val)
+
         explanation = {
             'feature_names': self.feature_names,
             'shap_values': raw_shap,
-            'base_value': float(self.shap_explainer.expected_value[0] if isinstance(self.shap_explainer.expected_value, (list, np.ndarray)) else self.shap_explainer.expected_value),
-            'feature_importance': scalar_importance
+            'base_value': base_val,
+            'feature_importance': feature_importance,
+            'predicted_class_idx': class_idx,
+            'predicted_class_label': self.label_encoder.inverse_transform([class_idx])[0],
         }
-        
+
         return explanation
 
     def save_model(self, path: str):
