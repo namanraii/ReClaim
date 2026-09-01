@@ -39,6 +39,8 @@ class EvidencePacket(BaseModel):
     # Bank & Network Signals
     bank_health: BankHealthReport
     vpa_bank_match: bool
+    app_vpa_match: bool
+    portability_mismatch_detected: bool
     in_portability_cooldown: bool
     
     # Historical Performance
@@ -52,14 +54,52 @@ class EvidencePacket(BaseModel):
     summary_text: str = ""
 
 
+# Comprehensive UPI VPA Handle to Sponsor/Issuing Bank mapping
 VPA_BANK_MAP = {
+    # Google Pay Sponsor Handles
     "okhdfc": "HDFC",
+    "okhdfcbank": "HDFC",
     "okicici": "ICICI",
     "oksbi": "SBI",
     "okaxis": "AXIS",
-    "okkotak": "KOTAK",
-    "okpnb": "PNB",
-    "okbob": "BOB",
+    # PhonePe Handles
+    "ybl": "YES",
+    "ibl": "ICICI",
+    "axl": "AXIS",
+    # Paytm Handles
+    "paytm": "PAYTM",
+    "pthdfc": "HDFC",
+    "ptsbi": "SBI",
+    "ptaxis": "AXIS",
+    # Direct Bank Apps
+    "hdfcbank": "HDFC",
+    "icici": "ICICI",
+    "sbi": "SBI",
+    "axisbank": "AXIS",
+    "kotak": "KOTAK",
+    "pnb": "PNB",
+    "bob": "BOB",
+    "barodampay": "BOB",
+    "unionbank": "UNION",
+    "indianbank": "INDIAN",
+}
+
+# VPA Handle to Expected Primary PSP App mapping
+VPA_PSP_MAP = {
+    "okhdfc": "GPay",
+    "okhdfcbank": "GPay",
+    "okicici": "GPay",
+    "oksbi": "GPay",
+    "okaxis": "GPay",
+    "ybl": "PhonePe",
+    "ibl": "PhonePe",
+    "axl": "PhonePe",
+    "paytm": "Paytm",
+    "pthdfc": "Paytm",
+    "ptsbi": "Paytm",
+    "ptaxis": "Paytm",
+    "apl": "AmazonPay",
+    "raxis": "AmazonPay",
 }
 
 
@@ -80,10 +120,20 @@ def build_evidence_packet(
 
     amount = float(mandate_dict.get("amount", 0.0))
     bank_code = mandate_dict.get("bank_code", "SBI").upper()
+    psp_app = str(mandate_dict.get("psp_app", "UPI"))
     customer_vpa = mandate_dict.get("customer_vpa", "")
     handle = customer_vpa.split("@")[-1].lower() if "@" in customer_vpa else ""
+
+    # Check 1: VPA Handle to Issuing Bank consistency
     expected_bank = VPA_BANK_MAP.get(handle)
     vpa_bank_match = (expected_bank == bank_code) if expected_bank else True
+
+    # Check 2: VPA Handle to PSP App consistency
+    expected_app = VPA_PSP_MAP.get(handle)
+    app_vpa_match = (expected_app.lower() in psp_app.lower() or psp_app.lower() in expected_app.lower()) if expected_app else True
+
+    # Portability mismatch is flagged if either bank handle is mismatched OR app handle is mismatched
+    portability_mismatch_detected = (expected_bank is not None and expected_bank != bank_code) or (expected_app is not None and not app_vpa_match)
 
     day = scheduled_dt.day
     hour = scheduled_dt.hour
@@ -137,9 +187,9 @@ def build_evidence_packet(
 
     summary_text = (
         f"Mandate {mandate_dict.get('id', 'N/A')} for ₹{amount:,.0f} ({mandate_dict.get('category', 'sub')}) "
-        f"on {bank_code} via {mandate_dict.get('psp_app', 'UPI')}. Attempt #{attempt_dict.get('attempt_number', 1)} "
+        f"on {bank_code} via {psp_app}. Attempt #{attempt_dict.get('attempt_number', 1)} "
         f"at {hour:02d}:00 on Day {day}. Bank health is {bank_health.status} ({bank_health.health_score*100:.0f}%, "
-        f"{bank_health.anomaly_sigma:.1f}σ anomaly). History: {len(history_summaries)} past attempts."
+        f"{bank_health.anomaly_sigma:.1f}σ anomaly). Portability mismatch: {portability_mismatch_detected}."
     )
 
     return EvidencePacket(
@@ -147,7 +197,7 @@ def build_evidence_packet(
         amount=amount,
         bank_code=bank_code,
         customer_vpa=customer_vpa,
-        psp_app=str(mandate_dict.get("psp_app", "UPI")),
+        psp_app=psp_app,
         category=str(mandate_dict.get("category", "subscription")),
         frequency=str(mandate_dict.get("frequency", "monthly")),
         consent_for_outreach=bool(mandate_dict.get("consent_for_outreach", True)),
@@ -160,6 +210,8 @@ def build_evidence_packet(
         is_salary_window=is_salary_window,
         bank_health=bank_health,
         vpa_bank_match=vpa_bank_match,
+        app_vpa_match=app_vpa_match,
+        portability_mismatch_detected=portability_mismatch_detected,
         in_portability_cooldown=in_port_cooldown,
         attempt_number=int(attempt_dict.get("attempt_number", 1)),
         attempts_history=history_summaries,

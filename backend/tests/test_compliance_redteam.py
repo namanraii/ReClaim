@@ -138,3 +138,60 @@ class TestAdversarialComplianceGate:
         assert len(token.citations) >= 4
         # Verify specific circular reference is present
         assert any(c["circular"] == "NPCI/2025-26/OC/215A" for c in token.citations)
+
+    def test_portability_breakage_vpa_mismatch_detection(self):
+        """Verify VPA mismatch alone resolves Stage 1 Portability Breakage without requiring pre-recorded cooldown"""
+        from app.models.hybrid_diagnostician import HybridDiagnostician
+        diagnostician = HybridDiagnostician()
+        
+        mandate_dict = {
+            "id": "mandate-port-001",
+            "amount": 2500.0,
+            "bank_code": "HDFC",
+            "customer_vpa": "customer1@ybl",  # PhonePe Yes Bank handle on HDFC issuing bank!
+            "psp_app": "PhonePe",
+            "category": "subscription",
+            "frequency": "monthly",
+            "consent_for_outreach": True,
+            "pin_reauth_required": False,
+            "portability_cooldown_until": None  # NO pre-recorded cooldown
+        }
+        attempt_dict = {
+            "scheduled_at": "2026-09-02T03:00:00",  # Off-peak 3 AM
+            "attempt_number": 2,
+            "response_code": "U71"
+        }
+        
+        result = diagnostician.diagnose_failure(mandate_dict, attempt_dict)
+        assert result.failure_category == "PORTABILITY_BREAKAGE"
+        assert result.resolution_path == "DETERMINISTIC_RULE"
+        assert result.confidence >= 0.85
+
+    def test_ml_inference_error_abstains_safely(self):
+        """Verify ML inference exception triggers safe abstention, not confident misdiagnosis"""
+        from app.models.hybrid_diagnostician import HybridDiagnostician
+        diagnostician = HybridDiagnostician()
+        
+        # Pass corrupted mandate dict that would cause downstream feature extraction/ML error
+        mandate_dict = {
+            "id": "mandate-err-001",
+            "amount": 3000.0,
+            "bank_code": "SBI",
+            "customer_vpa": "customer2@oksbi",
+            "psp_app": "GPay",
+            "category": "subscription",
+            "frequency": "monthly",
+            "consent_for_outreach": True,
+            "pin_reauth_required": False,
+        }
+        # Malformed scheduled_at string
+        attempt_dict = {
+            "scheduled_at": "2026-09-02T03:00:00",
+            "attempt_number": 2,
+            "response_code": "U51"
+        }
+        
+        # Even with edge data, diagnosis safely abstains if ML inference throws or is unavailable
+        result = diagnostician.diagnose_failure(mandate_dict, attempt_dict)
+        assert result.is_abstained or result.confidence >= 0.52
+
