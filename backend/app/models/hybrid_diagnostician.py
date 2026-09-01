@@ -164,7 +164,7 @@ class HybridDiagnostician:
                     for feat, impact in top_features:
                         shap_evidence.append(f"Model SHAP: '{feat}' had significant predictive contribution (SHAP value: {impact:+.3f}).")
                 except Exception as shap_err:
-                    pass  # Non-fatal SHAP inspection
+                    print(f"[HybridDiagnostician] SHAP inspection failed: {shap_err}")
 
             except Exception as e:
                 ml_error = str(e)

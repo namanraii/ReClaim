@@ -304,7 +304,6 @@ class FailureClassifier:
         # Encode features
         features_df = self.encode_features(features_df, fit=False)
         
-        # Select feature columns — align to training feature set
         for col in self.feature_names:
             if col not in features_df.columns:
                 features_df[col] = 0
@@ -313,16 +312,37 @@ class FailureClassifier:
         # Get SHAP values
         shap_values = self.shap_explainer.shap_values(X.iloc[[index]])
         
-        # If multi-class, shap_values is a list
+        # If multi-class, shap_values is a 3D array or list of arrays
         if isinstance(shap_values, list):
-            shap_values = shap_values[0]  # Use first class for simplicity
+            # List of arrays per class
+            shap_matrix = np.array([sv[0] for sv in shap_values])  # shape: (n_classes, n_features)
+            scalar_importance = {
+                feat: float(np.max(np.abs(shap_matrix[:, idx])))
+                for idx, feat in enumerate(self.feature_names)
+            }
+            raw_shap = shap_values[0][0].tolist() if len(shap_values) > 0 else []
+        elif len(shap_values.shape) == 3:
+            # 3D numpy array: (n_samples, n_features, n_classes)
+            sample_shap = shap_values[0]  # shape: (n_features, n_classes)
+            scalar_importance = {
+                feat: float(np.max(np.abs(sample_shap[idx, :])))
+                for idx, feat in enumerate(self.feature_names)
+            }
+            raw_shap = sample_shap[:, 0].tolist()
+        else:
+            sample_shap = shap_values[0]
+            scalar_importance = {
+                feat: float(np.abs(sample_shap[idx]))
+                for idx, feat in enumerate(self.feature_names)
+            }
+            raw_shap = sample_shap.tolist()
         
         # Create explanation dictionary
         explanation = {
             'feature_names': self.feature_names,
-            'shap_values': shap_values[0].tolist(),
-            'base_value': float(self.shap_explainer.expected_value[0] if isinstance(self.shap_explainer.expected_value, list) else self.shap_explainer.expected_value),
-            'feature_importance': dict(zip(self.feature_names, np.abs(shap_values[0]).tolist()))
+            'shap_values': raw_shap,
+            'base_value': float(self.shap_explainer.expected_value[0] if isinstance(self.shap_explainer.expected_value, (list, np.ndarray)) else self.shap_explainer.expected_value),
+            'feature_importance': scalar_importance
         }
         
         return explanation
