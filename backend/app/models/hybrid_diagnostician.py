@@ -19,12 +19,18 @@ class DiagnosticResult(BaseModel):
     failure_category: str
     confidence: float
     resolution_path: str  # "DETERMINISTIC_RULE", "CALIBRATED_XGBOOST", "ABSTAIN_DEFERRED", "ML_INFERENCE_ERROR_ABSTAIN"
+    resolution_tier: Optional[str] = None
     evidence_points: List[str]
     rationale: str
     recommended_interventions: List[str]
     is_abstained: bool = False
     raw_error_code: Optional[str] = None
     created_at: str = Field(default_factory=lambda: datetime.utcnow().isoformat())
+
+    def __init__(self, **data):
+        if "resolution_tier" not in data or data["resolution_tier"] is None:
+            data["resolution_tier"] = data.get("resolution_path", "DETERMINISTIC_RULE")
+        super().__init__(**data)
 
 
 # Standard UPI AutoPay Error Codes per Failure Mode

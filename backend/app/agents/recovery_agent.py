@@ -134,7 +134,7 @@ class RecoveryAgent:
             event_type="AI_DECISION_PLAN",
             event_data=decision_trace.dict(),
             reason=(
-                f"Diagnosed as {diagnosis.failure_category} ({diagnosis.resolution_tier}). "
+                f"Diagnosed as {diagnosis.failure_category} ({getattr(diagnosis, 'resolution_tier', diagnosis.resolution_path)}). "
                 f"Selected '{decision_trace.selected_action.value}' (ERV: ₹{decision_trace.expected_recovered_revenue:,.0f}). "
                 f"Compliance Token: {decision_trace.compliance_token.decision_id} (APPROVED)."
             ),

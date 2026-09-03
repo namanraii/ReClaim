@@ -124,7 +124,7 @@ function Dashboard() {
                   </td>
                   <td>
                     <span className="diag-tag">{item.failure_diagnosis}</span>
-                    <div className="tier-tag">{item.resolution_tier.replace('TIER_', 'T').replace('_', ' ')}</div>
+                    <div className="tier-tag">{(item.resolution_tier || item.resolution_path || 'TIER_1').replace('TIER_', 'T').replace(/_/g, ' ')}</div>
                   </td>
                   <td className="amount-col">₹{item.revenue_at_risk?.toLocaleString()}</td>
                   <td className="erv-col">
