@@ -4,7 +4,7 @@ Recovery API Routes
 
 from fastapi import APIRouter, Depends, HTTPException
 from sqlalchemy.orm import Session
-from typing import Dict
+from typing import Dict, Optional
 from datetime import datetime
 
 from app.db import get_db
