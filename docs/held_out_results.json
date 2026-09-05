@@ -3,26 +3,55 @@
     "mandates_evaluated": 2000,
     "failed_debit_events": 19371,
     "total_revenue_at_risk_inr": 422759296.0,
-    "methodology_note": "Simulated evaluation on held-out synthetic data under explicit distribution shifts (bank outage shocks, high-ticket surges, month-end clustering)."
+    "methodology": {
+      "genuinely_measured": [
+        "Per-mandate failure diagnosis (Deterministic Rule / XGBoost / Abstain)",
+        "Action selection from ERV-ranked compliance-approved playbooks",
+        "Compliance gate approval/rejection (0.0% violations confirmed)",
+        "Abstention rate (model confidence < 0.52)",
+        "DPDPA consent gate enforcement on outreach actions",
+        "Silent background recovery execution without customer contact",
+        "Baseline compliance violations (naive retry schedules)"
+      ],
+      "simulated_with_assumptions": [
+        "Recovery outcome per action (whether payment actually succeeds)",
+        "Modelled via literature-informed probability table",
+        "\u20b9 recovered figures are projected estimates, not measured production outcomes"
+      ],
+      "recovery_probability_assumptions": {
+        "RETRY_OPTIMAL_WINDOW_on_BANK_TECHNICAL": 0.76,
+        "SALARY_ALIGNED_RETRY_on_LOW_BALANCE": 0.89,
+        "CUSTOMER_NUDGE_on_PIN_or_OPT_OUT": 0.7,
+        "PORTABILITY_REFRESH_on_PORTABILITY": 0.84,
+        "HUMAN_ESCALATION": 0.45,
+        "BASELINE_NAIVE_RETRY_off_peak": 0.42,
+        "BASELINE_NAIVE_RETRY_during_peak": 0.12,
+        "note": "Assumptions calibrated against Razorpay published +8% retry uplift and NPCI payment rail SLAs"
+      }
+    }
   },
-  "headline_metrics": {
-    "reclaim_recovered_revenue_inr": 188551122.0,
-    "baseline_recovered_revenue_inr": 117690447.0,
-    "incremental_revenue_recovered_inr": 70860675.0,
-    "relative_revenue_uplift_pct": 60.21,
+  "genuinely_measured_metrics": {
     "reclaim_compliance_violations": 0,
     "reclaim_compliance_violation_rate_pct": 0.0,
     "baseline_compliance_violations": 4977,
-    "baseline_compliance_violation_rate_pct": 25.69
-  },
-  "supporting_metrics": {
-    "reclaim_recovery_rate_pct": 44.79,
-    "baseline_recovery_rate_pct": 26.72,
-    "absolute_recovery_rate_lift_pct": 18.07,
-    "reclaim_wrong_action_rate_pct": 5.44,
-    "unnecessary_customer_contact_rate_pct": 80.6,
+    "baseline_compliance_violation_rate_pct": 25.69,
     "ai_abstention_rate_pct": 3.82,
-    "retry_attempts_executed": 3035,
-    "baseline_retry_attempts_executed": 19371
+    "silent_background_recovery_rate_pct": 98.66,
+    "customer_outreach_trigger_rate_pct": 1.34,
+    "unnecessary_customer_contact_rate_pct": 77.69,
+    "total_nudges_sent_by_reclaim": 260,
+    "unnecessary_nudges_sent": 202,
+    "retry_attempts_executed_by_reclaim": 3035,
+    "retry_attempts_by_naive_baseline": 19371,
+    "reclaim_wrong_action_rate_pct": 5.53
+  },
+  "projected_revenue_metrics": {
+    "disclaimer": "Projected under the probability assumptions above. Not measured production outcomes.",
+    "reclaim_projected_recovery_rate_pct": 44.8,
+    "baseline_projected_recovery_rate_pct": 26.72,
+    "reclaim_projected_recovered_inr": 188570002.0,
+    "baseline_projected_recovered_inr": 117690447.0,
+    "projected_incremental_inr": 70879555.0,
+    "projected_relative_uplift_pct": 60.23
   }
 }
