@@ -107,10 +107,18 @@ class ProbabilityCalibrator:
         bin_lowers = bin_boundaries[:-1]
         bin_uppers = bin_boundaries[1:]
 
+        y_true = np.asarray(y_true, dtype=float)
+        y_prob = np.asarray(y_prob, dtype=float)
+
         ece = 0.0
-        for bin_lower, bin_upper in zip(bin_lowers, bin_uppers):
-            # Mask for samples in this bin
-            in_bin = (y_prob > bin_lower) & (y_prob <= bin_upper)
+        for i, (bin_lower, bin_upper) in enumerate(zip(bin_lowers, bin_uppers)):
+            # Mask for samples in this bin. The first bin is closed on the left
+            # so probabilities of exactly 0.0 (common after isotonic calibration)
+            # are counted instead of silently dropped.
+            if i == 0:
+                in_bin = (y_prob >= bin_lower) & (y_prob <= bin_upper)
+            else:
+                in_bin = (y_prob > bin_lower) & (y_prob <= bin_upper)
             prop_in_bin = in_bin.mean()
 
             if prop_in_bin > 0:
